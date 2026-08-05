@@ -1,6 +1,7 @@
 import io
 import json
 import unittest
+import copy
 from pathlib import Path
 from unittest import mock
 
@@ -66,6 +67,7 @@ def matching_ruleset():
     return {
         "id": 101,
         "name": "main-protection",
+        "bypass_actors": [],
         "target": "branch",
         "enforcement": "active",
         "conditions": {"ref_name": {"include": ["~DEFAULT_BRANCH"], "exclude": []}},
@@ -107,11 +109,37 @@ def matching_client():
     )
 
 
+def classic_policy_with_evidence():
+    policy = copy.deepcopy(repository_policy.load_policy(POLICY_PATH))
+    policy["main_protection"]["backend"] = "classic"
+    policy["main_protection"]["classic_evidence"] = {
+        "status": 403,
+        "operation": "POST /repos/RussianLioN/codex-problems-resolver/rulesets",
+        "category": "plan_feature_unavailable",
+        "message_excerpt": "rulesets feature is unavailable for this plan",
+        "tracked_reference": ".superpowers/sdd/task-2-report.md",
+    }
+    return policy
+
+
 class RepositoryPolicyTests(unittest.TestCase):
     def test_policy_file_validates(self):
         policy = repository_policy.load_policy(POLICY_PATH)
 
         self.assertEqual([], repository_policy.validate_policy(policy))
+
+    def test_policy_declares_complete_actions_permissions(self):
+        policy = repository_policy.load_policy(POLICY_PATH)
+
+        self.assertEqual(True, policy["actions"]["enabled"])
+        self.assertEqual("all", policy["actions"]["allowed_actions"])
+        self.assertEqual(True, policy["actions"]["sha_pinning_required"])
+
+    def test_policy_declares_ruleset_backend_and_no_bypass_actors(self):
+        policy = repository_policy.load_policy(POLICY_PATH)
+
+        self.assertEqual("ruleset", policy["main_protection"]["backend"])
+        self.assertEqual([], policy["main_protection"]["bypass_actors"])
 
     def test_check_reports_deterministic_drift(self):
         client = matching_client()
@@ -145,6 +173,41 @@ class RepositoryPolicyTests(unittest.TestCase):
             result.lines,
         )
 
+    def test_check_reports_actions_enabled_and_allowed_actions_drift(self):
+        client = matching_client()
+        live_actions = client.responses[("GET", "/repos/RussianLioN/codex-problems-resolver/actions/permissions")]
+        live_actions["enabled"] = False
+        live_actions["allowed_actions"] = "selected"
+        policy = repository_policy.load_policy(POLICY_PATH)
+
+        result = repository_policy.check_policy(policy, "RussianLioN/codex-problems-resolver", client)
+
+        self.assertEqual(1, result.exit_code)
+        self.assertEqual(
+            [
+                'DRIFT actions.allowed_actions: expected "all" actual "selected"',
+                "DRIFT actions.enabled: expected true actual false",
+            ],
+            result.lines,
+        )
+
+    def test_check_reports_ruleset_bypass_actors_drift(self):
+        client = matching_client()
+        client.responses[("GET", "/repos/RussianLioN/codex-problems-resolver/rulesets/101")][
+            "bypass_actors"
+        ] = [{"actor_id": 1, "actor_type": "RepositoryRole", "bypass_mode": "always"}]
+        policy = repository_policy.load_policy(POLICY_PATH)
+
+        result = repository_policy.check_policy(policy, "RussianLioN/codex-problems-resolver", client)
+
+        self.assertEqual(1, result.exit_code)
+        self.assertEqual(
+            [
+                'DRIFT ruleset.main-protection.bypass_actors: expected [] actual [{"actor_id": 1, "actor_type": "RepositoryRole", "bypass_mode": "always"}]',
+            ],
+            result.lines,
+        )
+
     def test_check_returns_two_for_auth_or_api_errors(self):
         repo = "RussianLioN/codex-problems-resolver"
         client = FakeGhClient(
@@ -161,26 +224,25 @@ class RepositoryPolicyTests(unittest.TestCase):
         self.assertEqual(2, result.exit_code)
         self.assertIn("authentication required", result.lines[0])
 
-    def test_classic_branch_protection_unavailable_returns_two_not_drift(self):
+    def test_classic_backend_branch_protection_unavailable_returns_two_not_drift(self):
         repo = "RussianLioN/codex-problems-resolver"
         client = matching_client()
-        client.responses[("GET", f"/repos/{repo}/rulesets")] = []
+        policy = classic_policy_with_evidence()
         client.errors[("GET", f"/repos/{repo}/branches/main/protection")] = repository_policy.GhApiError(
             "GitHub API rate limit", exit_code=2, status=500
         )
-        policy = repository_policy.load_policy(POLICY_PATH)
 
         result = repository_policy.check_policy(policy, repo, client)
 
         self.assertEqual(2, result.exit_code)
         self.assertIn("GitHub API rate limit", result.lines[0])
 
-    def test_unprotected_branch_404_is_reported_as_drift(self):
+    def test_ruleset_backend_missing_ruleset_is_drift_without_classic_probe(self):
         repo = "RussianLioN/codex-problems-resolver"
         client = matching_client()
         client.responses[("GET", f"/repos/{repo}/rulesets")] = []
-        client.errors[("GET", f"/repos/{repo}/branches/main/protection")] = repository_policy.GhApiError(
-            "branch not protected", exit_code=2, status=404
+        client.responses[("GET", f"/repos/{repo}/branches/main/protection")] = repository_policy.expected_classic_branch_protection(
+            repository_policy.load_policy(POLICY_PATH)
         )
         policy = repository_policy.load_policy(POLICY_PATH)
 
@@ -188,6 +250,81 @@ class RepositoryPolicyTests(unittest.TestCase):
 
         self.assertEqual(1, result.exit_code)
         self.assertEqual(["DRIFT ruleset.main-protection: expected present actual missing"], result.lines)
+        self.assertNotIn(("GET", f"/repos/{repo}/branches/main/protection"), [(m, p) for m, p, _ in client.calls])
+
+    def test_classic_backend_unprotected_branch_404_is_reported_as_drift(self):
+        repo = "RussianLioN/codex-problems-resolver"
+        client = matching_client()
+        policy = classic_policy_with_evidence()
+        client.errors[("GET", f"/repos/{repo}/branches/main/protection")] = repository_policy.GhApiError(
+            "branch not protected", exit_code=2, status=404
+        )
+
+        result = repository_policy.check_policy(policy, repo, client)
+
+        self.assertEqual(1, result.exit_code)
+        self.assertEqual(["DRIFT classic_branch_protection: expected present actual missing"], result.lines)
+
+    def test_classic_backend_without_tracked_evidence_is_invalid_before_api_access(self):
+        repo = "RussianLioN/codex-problems-resolver"
+        client = FakeGhClient()
+        policy = copy.deepcopy(repository_policy.load_policy(POLICY_PATH))
+        policy["main_protection"]["backend"] = "classic"
+
+        result = repository_policy.check_policy(policy, repo, client)
+
+        self.assertEqual(1, result.exit_code)
+        self.assertEqual([], client.calls)
+        self.assertIn("classic_evidence", result.lines[0])
+
+    def test_classic_backend_with_evidence_checks_only_classic_protection(self):
+        repo = "RussianLioN/codex-problems-resolver"
+        policy = classic_policy_with_evidence()
+        client = FakeGhClient(
+            {
+                ("GET", f"/repos/{repo}"): matching_repo(),
+                ("GET", f"/repos/{repo}/actions/permissions"): matching_actions_permissions(),
+                ("GET", f"/repos/{repo}/actions/permissions/workflow"): matching_workflow_permissions(),
+                ("GET", f"/repos/{repo}/branches/main/protection"): repository_policy.expected_classic_branch_protection(
+                    policy
+                ),
+            }
+        )
+
+        result = repository_policy.check_policy(policy, repo, client)
+
+        self.assertEqual(0, result.exit_code)
+        self.assertNotIn(("GET", f"/repos/{repo}/rulesets"), [(m, p) for m, p, _ in client.calls])
+
+    def test_classic_backend_with_evidence_apply_updates_only_classic_protection(self):
+        repo = "RussianLioN/codex-problems-resolver"
+        policy = classic_policy_with_evidence()
+        protected = {"done": False}
+
+        def put_protection(method, path, payload):
+            protected["done"] = True
+            return {}
+
+        def get_protection(method, path, payload):
+            if protected["done"]:
+                return repository_policy.expected_classic_branch_protection(policy)
+            raise repository_policy.GhApiError("branch not protected", exit_code=2, status=404)
+
+        client = FakeGhClient(
+            {
+                ("GET", f"/repos/{repo}"): matching_repo(),
+                ("GET", f"/repos/{repo}/actions/permissions"): matching_actions_permissions(),
+                ("GET", f"/repos/{repo}/actions/permissions/workflow"): matching_workflow_permissions(),
+                ("PUT", f"/repos/{repo}/branches/main/protection"): put_protection,
+                ("GET", f"/repos/{repo}/branches/main/protection"): get_protection,
+            }
+        )
+
+        result = repository_policy.apply_policy(policy, repo, repo, client)
+
+        self.assertEqual(0, result.exit_code)
+        self.assertIn(("PUT", f"/repos/{repo}/branches/main/protection"), [(m, p) for m, p, _ in client.calls])
+        self.assertNotIn(("GET", f"/repos/{repo}/rulesets"), [(m, p) for m, p, _ in client.calls])
 
     def test_apply_refuses_without_exact_confirmation_before_api_access(self):
         client = FakeGhClient()
@@ -253,6 +390,43 @@ class RepositoryPolicyTests(unittest.TestCase):
         self.assertIn(("PUT", f"/repos/{repo}/actions/permissions"), mutating_calls)
         self.assertIn(("PUT", f"/repos/{repo}/actions/permissions/workflow"), mutating_calls)
 
+    def test_apply_puts_complete_actions_permissions_payload(self):
+        repo = "RussianLioN/codex-problems-resolver"
+        permissions = matching_actions_permissions()
+        permissions["sha_pinning_required"] = False
+        captured_payloads = []
+
+        def put_actions_permissions(method, path, payload):
+            captured_payloads.append(payload)
+            permissions.update(payload)
+            return permissions
+
+        client = FakeGhClient(
+            {
+                ("GET", f"/repos/{repo}"): matching_repo(),
+                ("GET", f"/repos/{repo}/actions/permissions"): lambda method, path, payload: permissions,
+                ("GET", f"/repos/{repo}/actions/permissions/workflow"): matching_workflow_permissions(),
+                ("PUT", f"/repos/{repo}/actions/permissions"): put_actions_permissions,
+                ("GET", f"/repos/{repo}/rulesets"): [matching_ruleset()],
+                ("GET", f"/repos/{repo}/rulesets/101"): matching_ruleset(),
+            }
+        )
+        policy = repository_policy.load_policy(POLICY_PATH)
+
+        result = repository_policy.apply_policy(policy, repo, repo, client)
+
+        self.assertEqual(0, result.exit_code)
+        self.assertEqual(
+            [
+                {
+                    "enabled": True,
+                    "allowed_actions": "all",
+                    "sha_pinning_required": True,
+                }
+            ],
+            captured_payloads,
+        )
+
     def test_apply_updates_only_named_ruleset_and_preserves_unrelated_rulesets(self):
         repo = "RussianLioN/codex-problems-resolver"
         unrelated = {"id": 202, "name": "unrelated", "target": "branch", "enforcement": "active", "rules": []}
@@ -288,7 +462,7 @@ class RepositoryPolicyTests(unittest.TestCase):
         self.assertNotIn(("PATCH", f"/repos/{repo}/rulesets/202"), [(m, p) for m, p, _ in client.calls])
         self.assertFalse([call for call in client.calls if call[0] == "DELETE"])
 
-    def test_apply_falls_back_to_classic_branch_protection_when_rulesets_are_unavailable(self):
+    def test_apply_feature_unavailable_uses_classic_but_reports_ruleset_drift_until_policy_changes(self):
         repo = "RussianLioN/codex-problems-resolver"
         fallback_state = {"protected": False}
 
@@ -321,8 +495,242 @@ class RepositoryPolicyTests(unittest.TestCase):
 
         result = repository_policy.apply_policy(policy, repo, repo, client)
 
-        self.assertEqual(0, result.exit_code)
+        self.assertEqual(1, result.exit_code)
+        self.assertEqual(
+            [
+                "NOTICE: classic fallback applied after ruleset plan/feature unavailability; record tracked evidence and set main_protection.backend=classic in a follow-up policy change",
+                "DRIFT ruleset.main-protection: expected present actual missing",
+            ],
+            result.lines,
+        )
         self.assertIn(("PUT", f"/repos/{repo}/branches/main/protection"), [(m, p) for m, p, _ in client.calls])
+
+    def test_classic_branch_protection_payload_enforces_admins(self):
+        repo = "RussianLioN/codex-problems-resolver"
+        fallback_state = {"protected": False}
+        captured_payloads = []
+
+        def create_ruleset(method, path, payload):
+            raise repository_policy.GhApiError("rulesets feature is unavailable for this plan", exit_code=2, status=403)
+
+        def put_protection(method, path, payload):
+            captured_payloads.append(payload)
+            fallback_state["protected"] = True
+            return {}
+
+        def get_protection(method, path, payload):
+            if fallback_state["protected"]:
+                return repository_policy.expected_classic_branch_protection(
+                    repository_policy.load_policy(POLICY_PATH)
+                )
+            raise repository_policy.GhApiError("branch is not protected", exit_code=1, status=404)
+
+        client = FakeGhClient(
+            {
+                ("GET", f"/repos/{repo}"): matching_repo(),
+                ("GET", f"/repos/{repo}/actions/permissions"): matching_actions_permissions(),
+                ("GET", f"/repos/{repo}/actions/permissions/workflow"): matching_workflow_permissions(),
+                ("GET", f"/repos/{repo}/rulesets"): [],
+                ("POST", f"/repos/{repo}/rulesets"): create_ruleset,
+                ("PUT", f"/repos/{repo}/branches/main/protection"): put_protection,
+                ("GET", f"/repos/{repo}/branches/main/protection"): get_protection,
+            }
+        )
+        policy = repository_policy.load_policy(POLICY_PATH)
+
+        result = repository_policy.apply_policy(policy, repo, repo, client)
+
+        self.assertEqual(1, result.exit_code)
+        self.assertEqual(True, captured_payloads[0]["enforce_admins"])
+
+    def test_apply_feature_unavailable_returns_two_when_classic_fallback_fails(self):
+        repo = "RussianLioN/codex-problems-resolver"
+
+        def create_ruleset(method, path, payload):
+            raise repository_policy.GhApiError("rulesets feature is unavailable for this plan", exit_code=2, status=403)
+
+        def put_protection(method, path, payload):
+            raise repository_policy.GhApiError("classic branch protection failed", exit_code=2, status=500)
+
+        client = FakeGhClient(
+            {
+                ("GET", f"/repos/{repo}"): matching_repo(),
+                ("GET", f"/repos/{repo}/actions/permissions"): matching_actions_permissions(),
+                ("GET", f"/repos/{repo}/actions/permissions/workflow"): matching_workflow_permissions(),
+                ("GET", f"/repos/{repo}/rulesets"): [],
+                ("POST", f"/repos/{repo}/rulesets"): create_ruleset,
+                ("PUT", f"/repos/{repo}/branches/main/protection"): put_protection,
+            }
+        )
+        policy = repository_policy.load_policy(POLICY_PATH)
+
+        result = repository_policy.apply_policy(policy, repo, repo, client)
+
+        self.assertEqual(2, result.exit_code)
+        self.assertIn("classic branch protection failed", result.lines[0])
+
+    def test_check_reports_classic_enforce_admins_drift(self):
+        repo = "RussianLioN/codex-problems-resolver"
+        policy = classic_policy_with_evidence()
+        live_protection = repository_policy.expected_classic_branch_protection(policy)
+        live_protection["enforce_admins"] = {"enabled": False}
+        client = FakeGhClient(
+            {
+                ("GET", f"/repos/{repo}"): matching_repo(),
+                ("GET", f"/repos/{repo}/actions/permissions"): matching_actions_permissions(),
+                ("GET", f"/repos/{repo}/actions/permissions/workflow"): matching_workflow_permissions(),
+                ("GET", f"/repos/{repo}/rulesets"): [],
+                ("GET", f"/repos/{repo}/branches/main/protection"): live_protection,
+            }
+        )
+
+        result = repository_policy.check_policy(policy, repo, client)
+
+        self.assertEqual(1, result.exit_code)
+        self.assertEqual(
+            ["DRIFT classic_branch_protection.enforce_admins: expected true actual false"],
+            result.lines,
+        )
+
+    def test_apply_ruleset_not_found_without_feature_evidence_returns_two_and_does_not_use_classic(self):
+        repo = "RussianLioN/codex-problems-resolver"
+
+        def create_ruleset(method, path, payload):
+            raise repository_policy.GhApiError("ruleset not found", exit_code=2, status=404)
+
+        client = FakeGhClient(
+            {
+                ("GET", f"/repos/{repo}"): matching_repo(),
+                ("GET", f"/repos/{repo}/actions/permissions"): matching_actions_permissions(),
+                ("GET", f"/repos/{repo}/actions/permissions/workflow"): matching_workflow_permissions(),
+                ("GET", f"/repos/{repo}/rulesets"): [],
+                ("POST", f"/repos/{repo}/rulesets"): create_ruleset,
+            }
+        )
+        policy = repository_policy.load_policy(POLICY_PATH)
+
+        result = repository_policy.apply_policy(policy, repo, repo, client)
+
+        self.assertEqual(2, result.exit_code)
+        self.assertIn("ruleset not found", result.lines[0])
+        self.assertNotIn(("PUT", f"/repos/{repo}/branches/main/protection"), [(m, p) for m, p, _ in client.calls])
+
+    def test_apply_ruleset_auth_error_with_ruleset_words_returns_two_and_does_not_use_classic(self):
+        repo = "RussianLioN/codex-problems-resolver"
+
+        def create_ruleset(method, path, payload):
+            raise repository_policy.GhApiError("auth failed for rulesets feature", exit_code=2, status=403)
+
+        client = FakeGhClient(
+            {
+                ("GET", f"/repos/{repo}"): matching_repo(),
+                ("GET", f"/repos/{repo}/actions/permissions"): matching_actions_permissions(),
+                ("GET", f"/repos/{repo}/actions/permissions/workflow"): matching_workflow_permissions(),
+                ("GET", f"/repos/{repo}/rulesets"): [],
+                ("POST", f"/repos/{repo}/rulesets"): create_ruleset,
+            }
+        )
+        policy = repository_policy.load_policy(POLICY_PATH)
+
+        result = repository_policy.apply_policy(policy, repo, repo, client)
+
+        self.assertEqual(2, result.exit_code)
+        self.assertIn("auth failed", result.lines[0])
+        self.assertNotIn(("PUT", f"/repos/{repo}/branches/main/protection"), [(m, p) for m, p, _ in client.calls])
+
+    def test_apply_bad_ruleset_url_error_returns_two_and_does_not_use_classic(self):
+        repo = "RussianLioN/codex-problems-resolver"
+
+        def create_ruleset(method, path, payload):
+            raise repository_policy.GhApiError("bad URL for rulesets", exit_code=2, status=404)
+
+        client = FakeGhClient(
+            {
+                ("GET", f"/repos/{repo}"): matching_repo(),
+                ("GET", f"/repos/{repo}/actions/permissions"): matching_actions_permissions(),
+                ("GET", f"/repos/{repo}/actions/permissions/workflow"): matching_workflow_permissions(),
+                ("GET", f"/repos/{repo}/rulesets"): [],
+                ("POST", f"/repos/{repo}/rulesets"): create_ruleset,
+            }
+        )
+        policy = repository_policy.load_policy(POLICY_PATH)
+
+        result = repository_policy.apply_policy(policy, repo, repo, client)
+
+        self.assertEqual(2, result.exit_code)
+        self.assertIn("bad URL", result.lines[0])
+        self.assertNotIn(("PUT", f"/repos/{repo}/branches/main/protection"), [(m, p) for m, p, _ in client.calls])
+
+    def test_apply_does_not_fallback_when_ruleset_patch_reports_plan_feature_unavailable(self):
+        repo = "RussianLioN/codex-problems-resolver"
+
+        def patch_ruleset(method, path, payload):
+            raise repository_policy.GhApiError("rulesets feature is unavailable for this plan", exit_code=2, status=403)
+
+        current_ruleset = matching_ruleset()
+        current_ruleset["enforcement"] = "disabled"
+        client = FakeGhClient(
+            {
+                ("GET", f"/repos/{repo}"): matching_repo(),
+                ("GET", f"/repos/{repo}/actions/permissions"): matching_actions_permissions(),
+                ("GET", f"/repos/{repo}/actions/permissions/workflow"): matching_workflow_permissions(),
+                ("GET", f"/repos/{repo}/rulesets"): [matching_ruleset()],
+                ("GET", f"/repos/{repo}/rulesets/101"): current_ruleset,
+                ("PATCH", f"/repos/{repo}/rulesets/101"): patch_ruleset,
+            }
+        )
+        policy = repository_policy.load_policy(POLICY_PATH)
+
+        result = repository_policy.apply_policy(policy, repo, repo, client)
+
+        self.assertEqual(2, result.exit_code)
+        self.assertIn("rulesets feature is unavailable", result.lines[0])
+        self.assertNotIn(("PUT", f"/repos/{repo}/branches/main/protection"), [(m, p) for m, p, _ in client.calls])
+
+    def test_apply_does_not_fallback_when_ruleset_list_reports_plan_feature_unavailable(self):
+        repo = "RussianLioN/codex-problems-resolver"
+        client = FakeGhClient(
+            {
+                ("GET", f"/repos/{repo}"): matching_repo(),
+                ("GET", f"/repos/{repo}/actions/permissions"): matching_actions_permissions(),
+                ("GET", f"/repos/{repo}/actions/permissions/workflow"): matching_workflow_permissions(),
+            },
+            errors={
+                ("GET", f"/repos/{repo}/rulesets"): repository_policy.GhApiError(
+                    "rulesets feature is unavailable for this plan", exit_code=2, status=403
+                )
+            },
+        )
+        policy = repository_policy.load_policy(POLICY_PATH)
+
+        result = repository_policy.apply_policy(policy, repo, repo, client)
+
+        self.assertEqual(2, result.exit_code)
+        self.assertIn("rulesets feature is unavailable", result.lines[0])
+        self.assertNotIn(("PUT", f"/repos/{repo}/branches/main/protection"), [(m, p) for m, p, _ in client.calls])
+
+    def test_apply_ruleset_permission_error_without_feature_evidence_returns_two_and_does_not_use_classic(self):
+        repo = "RussianLioN/codex-problems-resolver"
+
+        def create_ruleset(method, path, payload):
+            raise repository_policy.GhApiError("permission denied for ruleset endpoint", exit_code=2, status=403)
+
+        client = FakeGhClient(
+            {
+                ("GET", f"/repos/{repo}"): matching_repo(),
+                ("GET", f"/repos/{repo}/actions/permissions"): matching_actions_permissions(),
+                ("GET", f"/repos/{repo}/actions/permissions/workflow"): matching_workflow_permissions(),
+                ("GET", f"/repos/{repo}/rulesets"): [],
+                ("POST", f"/repos/{repo}/rulesets"): create_ruleset,
+            }
+        )
+        policy = repository_policy.load_policy(POLICY_PATH)
+
+        result = repository_policy.apply_policy(policy, repo, repo, client)
+
+        self.assertEqual(2, result.exit_code)
+        self.assertIn("permission denied", result.lines[0])
+        self.assertNotIn(("PUT", f"/repos/{repo}/branches/main/protection"), [(m, p) for m, p, _ in client.calls])
 
     def test_cli_validate_reports_schema_errors(self):
         with mock.patch("sys.stdout", new_callable=io.StringIO) as stdout:

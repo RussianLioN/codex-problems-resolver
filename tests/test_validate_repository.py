@@ -62,6 +62,24 @@ class ValidateRepositoryTests(unittest.TestCase):
             result.errors,
         )
 
+    def test_required_path_that_exists_but_is_untracked_is_reported_in_git_checkout(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            subprocess.run(["git", "init"], cwd=root, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+            for rel in validate_repository.REQUIRED_PATHS:
+                path = root / rel
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_text("placeholder\n", encoding="utf-8")
+                if rel != "scripts/validate_repository.py":
+                    subprocess.run(["git", "add", rel], cwd=root, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+
+            result = validate_repository.validate_root(root)
+
+        self.assertIn(
+            "scripts/validate_repository.py: required repository path is missing or ignored",
+            result.errors,
+        )
+
     def test_required_paths_in_plain_directory_are_checked_by_existence(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -74,6 +92,57 @@ class ValidateRepositoryTests(unittest.TestCase):
 
         self.assertNotIn(
             "scripts/validate_repository.py: required repository path is missing or ignored",
+            result.errors,
+        )
+
+    def test_job_level_reusable_workflow_uses_must_be_pinned_to_full_sha(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            shutil.copytree(Path(__file__).resolve().parents[1], root, dirs_exist_ok=True)
+            workflow = root / ".github" / "workflows" / "governance.yml"
+            workflow.write_text(
+                """
+name: reusable
+on:
+  workflow_dispatch:
+jobs:
+  call:
+    uses: owner/repo/.github/workflows/reusable.yml@v1
+""".lstrip(),
+                encoding="utf-8",
+            )
+
+            result = validate_repository.validate_root(root)
+
+        self.assertIn(
+            ".github/workflows/governance.yml: external uses entry is not pinned to a full 40-hex SHA: owner/repo/.github/workflows/reusable.yml@v1",
+            result.errors,
+        )
+
+    def test_external_uses_allows_full_sha_with_inline_comment_and_local_relative_action(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            shutil.copytree(Path(__file__).resolve().parents[1], root, dirs_exist_ok=True)
+            workflow = root / ".github" / "workflows" / "governance.yml"
+            workflow.write_text(
+                """
+name: local-and-pinned
+on:
+  workflow_dispatch:
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # pinned v4
+      - uses: ./.github/actions/local
+""".lstrip(),
+                encoding="utf-8",
+            )
+
+            result = validate_repository.validate_root(root)
+
+        self.assertNotIn(
+            ".github/workflows/governance.yml: external uses entry is not pinned to a full 40-hex SHA: actions/checkout@11d5960a326750d5838078e36cf38b85af677262",
             result.errors,
         )
 

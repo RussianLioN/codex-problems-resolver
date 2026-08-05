@@ -60,7 +60,7 @@ REQUIRED_HEADINGS = {
 
 TEXT_SUFFIXES = {".md", ".py", ".json", ".yml", ".yaml", ".gitignore"}
 FULL_SHA = re.compile(r"^[0-9a-f]{40}$")
-USES_LINE = re.compile(r"^\s*-\s+uses:\s*([^@\s]+)@([^\s#]+)\s*$")
+USES_LINE = re.compile(r"^\s*(?:-\s*)?uses:\s*([^@\s#]+)(?:@([^\s#]+))?\s*(?:#.*)?$")
 LOCAL_ACTION_PREFIXES = ("./", "../")
 
 
@@ -83,7 +83,7 @@ def validate_root(root: Path | str = Path(".")) -> ValidationResult:
 def _git_visible_paths(root: Path) -> tuple[list[Path], bool]:
     try:
         completed = subprocess.run(
-            ["git", "-C", str(root), "ls-files", "--cached", "--others", "--exclude-standard"],
+            ["git", "-C", str(root), "ls-files", "--cached"],
             text=True,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
@@ -110,15 +110,29 @@ def _candidate_paths(root: Path) -> list[Path]:
 
 def _check_required_paths(root: Path) -> list[str]:
     errors = []
-    visible_paths, is_git_checkout = _git_visible_paths(root)
+    _, is_git_checkout = _git_visible_paths(root)
     if is_git_checkout:
-        visible = {path.relative_to(root).as_posix() for path in visible_paths if path.exists()}
+        visible = {required for required in REQUIRED_PATHS if _git_path_is_tracked(root, required)}
     else:
         visible = {required for required in REQUIRED_PATHS if (root / required).exists()}
     for required in REQUIRED_PATHS:
         if required not in visible:
             errors.append(f"{required}: required repository path is missing or ignored")
     return errors
+
+
+def _git_path_is_tracked(root: Path, rel: str) -> bool:
+    try:
+        completed = subprocess.run(
+            ["git", "-C", str(root), "ls-files", "--error-unmatch", "--", rel],
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            check=False,
+        )
+    except FileNotFoundError:
+        return False
+    return completed.returncode == 0
 
 
 def _is_text_path(path: Path) -> bool:
@@ -184,8 +198,9 @@ def _check_workflow_uses(root: Path) -> list[str]:
             action, ref = match.groups()
             if action.startswith(LOCAL_ACTION_PREFIXES):
                 continue
-            if not FULL_SHA.match(ref):
-                errors.append(f"{rel}: external uses entry is not pinned to a full 40-hex SHA: {action}@{ref}")
+            if ref is None or not FULL_SHA.match(ref):
+                suffix = f"@{ref}" if ref is not None else ""
+                errors.append(f"{rel}: external uses entry is not pinned to a full 40-hex SHA: {action}{suffix}")
     return errors
 
 

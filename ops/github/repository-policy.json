@@ -15,13 +15,17 @@
     "delete_branch_on_merge": true
   },
   "actions": {
+    "enabled": true,
+    "allowed_actions": "all",
     "default_workflow_permissions": "read",
     "workflow_pr_approval": false,
     "sha_pinning_required": true,
     "pin_external_uses_to_full_sha": true
   },
   "main_protection": {
+    "backend": "ruleset",
     "name": "main-protection",
+    "bypass_actors": [],
     "target": "branch",
     "enforcement": "active",
     "include": [

@@ -95,16 +95,22 @@ def validate_policy(policy: dict[str, Any]) -> list[str]:
 
     actions = policy.get("actions")
     if actions != {
+        "enabled": True,
+        "allowed_actions": "all",
         "default_workflow_permissions": "read",
         "workflow_pr_approval": False,
         "sha_pinning_required": True,
         "pin_external_uses_to_full_sha": True,
     }:
-        errors.append("actions settings must require SHA pinning, read workflow permission, and no PR approval")
+        errors.append("actions settings must require enabled Actions, all actions, SHA pinning, read workflow permission, and no PR approval")
 
     protection = policy.get("main_protection")
+    if not isinstance(protection, dict):
+        errors.append("main_protection must be an object")
+        return errors
     required_protection = {
         "name": RULESET_NAME,
+        "bypass_actors": [],
         "target": "branch",
         "enforcement": "active",
         "include": ["~DEFAULT_BRANCH"],
@@ -118,9 +124,35 @@ def validate_policy(policy: dict[str, Any]) -> list[str]:
         "block_deletions": True,
         "block_force_pushes": True,
     }
-    if protection != required_protection:
+    backend = protection.get("backend")
+    if backend not in {"ruleset", "classic"}:
+        errors.append("main_protection.backend must be ruleset or classic")
+    if backend == "classic":
+        errors.extend(_validate_classic_evidence(policy, protection))
+    actual_protection = {key: protection.get(key) for key in required_protection}
+    if actual_protection != required_protection:
         errors.append("main_protection must match the required main-protection ruleset")
 
+    return errors
+
+
+def _validate_classic_evidence(policy: dict[str, Any], protection: dict[str, Any]) -> list[str]:
+    evidence = protection.get("classic_evidence")
+    if not isinstance(evidence, dict):
+        return ["main_protection.classic_evidence is required when backend is classic"]
+    expected_operation = f"POST /repos/{policy.get('repository')}/rulesets"
+    errors: list[str] = []
+    if evidence.get("status") not in {403, 404}:
+        errors.append("main_protection.classic_evidence.status must be 403 or 404")
+    if evidence.get("operation") != expected_operation:
+        errors.append(f"main_protection.classic_evidence.operation must be {expected_operation}")
+    if evidence.get("category") != "plan_feature_unavailable":
+        errors.append("main_protection.classic_evidence.category must be plan_feature_unavailable")
+    message = str(evidence.get("message_excerpt", "")).lower()
+    if not message or "ruleset" not in message or not any(word in message for word in ("plan", "feature")):
+        errors.append("main_protection.classic_evidence.message_excerpt must mention ruleset(s) and plan/feature")
+    if not evidence.get("tracked_reference"):
+        errors.append("main_protection.classic_evidence.tracked_reference is required")
     return errors
 
 
@@ -140,6 +172,8 @@ def expected_repository_settings(policy: dict[str, Any]) -> dict[str, Any]:
 
 def expected_actions_permissions(policy: dict[str, Any]) -> dict[str, Any]:
     return {
+        "enabled": policy["actions"]["enabled"],
+        "allowed_actions": policy["actions"]["allowed_actions"],
         "sha_pinning_required": policy["actions"]["sha_pinning_required"],
     }
 
@@ -155,6 +189,7 @@ def expected_ruleset_payload(policy: dict[str, Any]) -> dict[str, Any]:
     protection = policy["main_protection"]
     return {
         "name": protection["name"],
+        "bypass_actors": protection["bypass_actors"],
         "target": protection["target"],
         "enforcement": protection["enforcement"],
         "conditions": {
@@ -198,7 +233,7 @@ def expected_classic_branch_protection(policy: dict[str, Any]) -> dict[str, Any]
             "strict": protection["strict_required_status_checks_policy"],
             "contexts": checks,
         },
-        "enforce_admins": None,
+        "enforce_admins": True,
         "required_pull_request_reviews": {
             "required_approving_review_count": protection["required_approving_review_count"],
             "dismiss_stale_reviews": False,
@@ -216,6 +251,7 @@ def expected_classic_branch_protection(policy: dict[str, Any]) -> dict[str, Any]
 def normalize_ruleset(ruleset: dict[str, Any]) -> dict[str, Any]:
     normalized = {
         "name": ruleset.get("name"),
+        "bypass_actors": _normalize_bypass_actors(ruleset.get("bypass_actors")),
         "target": ruleset.get("target"),
         "enforcement": ruleset.get("enforcement"),
         "conditions": ruleset.get("conditions", {}),
@@ -228,6 +264,11 @@ def normalize_ruleset(ruleset: dict[str, Any]) -> dict[str, Any]:
         normalized["rules"].append(item)
     normalized["rules"] = sorted(normalized["rules"], key=lambda item: item["type"] or "")
     return normalized
+
+
+def _normalize_bypass_actors(value: Any) -> list[dict[str, Any]]:
+    actors = value or []
+    return sorted(actors, key=lambda item: json.dumps(item, ensure_ascii=False, sort_keys=True))
 
 
 def _without_ids(data: dict[str, Any]) -> dict[str, Any]:
@@ -281,7 +322,7 @@ def _normalize_classic_protection(raw: dict[str, Any]) -> dict[str, Any]:
             "strict": checks.get("strict"),
             "contexts": sorted(contexts or []),
         },
-        "enforce_admins": None,
+        "enforce_admins": _enabled_value(raw.get("enforce_admins")),
         "required_pull_request_reviews": {
             "required_approving_review_count": reviews.get("required_approving_review_count"),
             "dismiss_stale_reviews": reviews.get("dismiss_stale_reviews", False),
@@ -316,19 +357,23 @@ def check_policy(policy: dict[str, Any], repo: str, client: Any) -> CommandResul
         lines = _diff(expected_repository_settings(policy), live_repo, "repository")
         lines.extend(_diff(expected_actions_permissions(policy), live_actions, "actions"))
         lines.extend(_diff(expected_workflow_permissions(policy), live_workflow, "actions.workflow"))
-        ruleset = _get_named_ruleset(client, repo, RULESET_NAME)
-        if ruleset is None:
+        backend = policy["main_protection"]["backend"]
+        if backend == "classic":
             classic_result = _check_classic_branch_protection(policy, repo, client)
             if classic_result.exit_code == 2:
                 return classic_result
             if classic_result.exit_code == 0:
                 lines.extend(classic_result.lines)
             else:
-                lines.append(f"DRIFT ruleset.{RULESET_NAME}: expected present actual missing")
+                lines.extend(classic_result.lines)
         else:
-            expected = normalize_ruleset(expected_ruleset_payload(policy))
-            actual = normalize_ruleset(_without_ids(ruleset))
-            lines.extend(_diff(expected, actual, "ruleset.main-protection"))
+            ruleset = _get_named_ruleset(client, repo, RULESET_NAME)
+            if ruleset is None:
+                lines.append(f"DRIFT ruleset.{RULESET_NAME}: expected present actual missing")
+            else:
+                expected = normalize_ruleset(expected_ruleset_payload(policy))
+                actual = normalize_ruleset(_without_ids(ruleset))
+                lines.extend(_diff(expected, actual, "ruleset.main-protection"))
     except GhApiError as exc:
         return CommandResult(2, [f"ERROR: {exc.message}"])
 
@@ -393,8 +438,24 @@ def apply_policy(policy: dict[str, Any], repo: str, confirm: str, client: Any) -
         if _needs_update(workflow_payload, live_workflow):
             client.call("PUT", f"/repos/{repo}/actions/permissions/workflow", workflow_payload)
 
-        _upsert_ruleset_or_fallback(policy, repo, client)
+        fallback_applied = False
+        if policy["main_protection"]["backend"] == "classic":
+            client.call(
+                "PUT",
+                f"/repos/{repo}/branches/{policy['default_branch']}/protection",
+                expected_classic_branch_protection(policy),
+            )
+        else:
+            fallback_applied = _upsert_ruleset_or_fallback(policy, repo, client)
         result = check_policy(policy, repo, client)
+        if fallback_applied and result.exit_code == 1:
+            return CommandResult(
+                1,
+                [
+                    "NOTICE: classic fallback applied after ruleset plan/feature unavailability; record tracked evidence and set main_protection.backend=classic in a follow-up policy change",
+                    *result.lines,
+                ],
+            )
         if result.exit_code == 0:
             return CommandResult(0, ["OK: repository policy applied", *result.lines])
         return result
@@ -402,7 +463,7 @@ def apply_policy(policy: dict[str, Any], repo: str, confirm: str, client: Any) -
         return CommandResult(2, [f"ERROR: {exc.message}"])
 
 
-def _upsert_ruleset_or_fallback(policy: dict[str, Any], repo: str, client: Any) -> None:
+def _upsert_ruleset_or_fallback(policy: dict[str, Any], repo: str, client: Any) -> bool:
     payload = expected_ruleset_payload(policy)
     existing = None
     existing_id = None
@@ -412,27 +473,30 @@ def _upsert_ruleset_or_fallback(policy: dict[str, Any], repo: str, client: Any) 
             existing = client.call("GET", f"/repos/{repo}/rulesets/{existing_id}") if existing_id is not None else ruleset
             break
 
-    try:
-        if existing is None:
+    if existing is None:
+        try:
             client.call("POST", f"/repos/{repo}/rulesets", payload)
-            return
-        if _needs_update(normalize_ruleset(payload), normalize_ruleset(_without_ids(existing))):
-            client.call("PATCH", f"/repos/{repo}/rulesets/{existing_id}", payload)
-    except GhApiError as exc:
-        if _is_ruleset_feature_unavailable(exc):
-            client.call(
-                "PUT",
-                f"/repos/{repo}/branches/{policy['default_branch']}/protection",
-                expected_classic_branch_protection(policy),
-            )
-            return
-        raise
+            return False
+        except GhApiError as exc:
+            if _is_ruleset_feature_unavailable(exc):
+                client.call(
+                    "PUT",
+                    f"/repos/{repo}/branches/{policy['default_branch']}/protection",
+                    expected_classic_branch_protection(policy),
+                )
+                return True
+            raise
+    if _needs_update(normalize_ruleset(payload), normalize_ruleset(_without_ids(existing))):
+        client.call("PATCH", f"/repos/{repo}/rulesets/{existing_id}", payload)
+    return False
 
 
 def _is_ruleset_feature_unavailable(error: GhApiError) -> bool:
     text = error.message.lower()
-    has_feature_evidence = any(word in text for word in ("plan", "feature", "ruleset", "rulesets", "not available", "unavailable"))
-    return error.status in {403, 404} and has_feature_evidence
+    blocked = any(phrase in text for phrase in ("auth", "permission", "not found", "bad url", "bad URL".lower(), "url"))
+    has_plan_or_feature = any(phrase in text for phrase in ("plan", "feature", "not available", "unavailable"))
+    has_ruleset = "ruleset" in text or "rulesets" in text
+    return error.status in {403, 404} and has_ruleset and has_plan_or_feature and not blocked
 
 
 def _print_result(result: CommandResult) -> int:
