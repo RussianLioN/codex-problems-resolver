@@ -271,6 +271,20 @@ def expected_repository_settings(policy: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def expected_builtin_repository_settings(policy: dict[str, Any]) -> dict[str, Any]:
+    expected = expected_repository_settings(policy)
+    return {
+        key: expected[key]
+        for key in (
+            "private",
+            "default_branch",
+            "has_issues",
+            "has_wiki",
+            "has_projects",
+        )
+    }
+
+
 def expected_actions_permissions(policy: dict[str, Any]) -> dict[str, Any]:
     return {
         "enabled": policy["actions"]["enabled"],
@@ -480,14 +494,16 @@ def check_policy(
 
     try:
         live_repo = client.call("GET", f"/repos/{repo}")
-        lines = _diff(expected_repository_settings(policy), live_repo, "repository")
         notices: list[str] = []
         if mode == "full":
+            lines = _diff(expected_repository_settings(policy), live_repo, "repository")
             live_actions = _call_full_admin_read(client, repo, f"/repos/{repo}/actions/permissions")
             live_workflow = _call_full_admin_read(client, repo, f"/repos/{repo}/actions/permissions/workflow")
             lines.extend(_diff(expected_actions_permissions(policy), live_actions, "actions"))
             lines.extend(_diff(expected_workflow_permissions(policy), live_workflow, "actions.workflow"))
         else:
+            lines = _diff(expected_builtin_repository_settings(policy), live_repo, "repository")
+            notices.append("NOTICE: builtin mode did not check repository merge settings")
             notices.append("NOTICE: builtin mode did not check Actions settings")
 
         backend = policy["main_protection"]["backend"]

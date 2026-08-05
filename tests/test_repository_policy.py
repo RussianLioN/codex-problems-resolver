@@ -50,6 +50,16 @@ def matching_repo():
     }
 
 
+def matching_builtin_repo():
+    return {
+        "private": True,
+        "default_branch": "main",
+        "has_issues": True,
+        "has_wiki": False,
+        "has_projects": False,
+    }
+
+
 def matching_actions_permissions():
     return {
         "enabled": True,
@@ -244,9 +254,37 @@ class RepositoryPolicyTests(unittest.TestCase):
         result = repository_policy.check_policy(policy, repo, client, mode="builtin")
 
         self.assertEqual(0, result.exit_code)
-        self.assertEqual(["NOTICE: builtin mode did not check Actions settings"], result.lines)
+        self.assertEqual(
+            [
+                "NOTICE: builtin mode did not check repository merge settings",
+                "NOTICE: builtin mode did not check Actions settings",
+            ],
+            result.lines,
+        )
         self.assertNotIn(("GET", f"/repos/{repo}/actions/permissions"), [(m, p) for m, p, _ in client.calls])
         self.assertNotIn(("GET", f"/repos/{repo}/actions/permissions/workflow"), [(m, p) for m, p, _ in client.calls])
+
+    def test_builtin_mode_partial_repository_response_skips_merge_fields_with_notice(self):
+        repo = "RussianLioN/codex-problems-resolver"
+        client = FakeGhClient(
+            {
+                ("GET", f"/repos/{repo}"): matching_builtin_repo(),
+                ("GET", f"/repos/{repo}/rulesets"): [matching_ruleset()],
+                ("GET", f"/repos/{repo}/rulesets/101"): matching_ruleset(),
+            }
+        )
+        policy = repository_policy.load_policy(POLICY_PATH)
+
+        result = repository_policy.check_policy(policy, repo, client, mode="builtin")
+
+        self.assertEqual(0, result.exit_code)
+        self.assertEqual(
+            [
+                "NOTICE: builtin mode did not check repository merge settings",
+                "NOTICE: builtin mode did not check Actions settings",
+            ],
+            result.lines,
+        )
 
     def test_builtin_mode_reports_scope_notice_alongside_observed_drift(self):
         repo = "RussianLioN/codex-problems-resolver"
@@ -265,7 +303,57 @@ class RepositoryPolicyTests(unittest.TestCase):
         self.assertEqual(
             [
                 "DRIFT repository.has_wiki: expected false actual true",
+                "NOTICE: builtin mode did not check repository merge settings",
                 "NOTICE: builtin mode did not check Actions settings",
+            ],
+            result.lines,
+        )
+
+    def test_builtin_mode_partial_repository_response_still_reports_visible_drift(self):
+        repo = "RussianLioN/codex-problems-resolver"
+        client = FakeGhClient(
+            {
+                ("GET", f"/repos/{repo}"): {**matching_builtin_repo(), "has_wiki": True},
+                ("GET", f"/repos/{repo}/rulesets"): [matching_ruleset()],
+                ("GET", f"/repos/{repo}/rulesets/101"): matching_ruleset(),
+            }
+        )
+        policy = repository_policy.load_policy(POLICY_PATH)
+
+        result = repository_policy.check_policy(policy, repo, client, mode="builtin")
+
+        self.assertEqual(1, result.exit_code)
+        self.assertEqual(
+            [
+                "DRIFT repository.has_wiki: expected false actual true",
+                "NOTICE: builtin mode did not check repository merge settings",
+                "NOTICE: builtin mode did not check Actions settings",
+            ],
+            result.lines,
+        )
+
+    def test_full_mode_partial_repository_response_reports_missing_merge_fields_as_drift(self):
+        repo = "RussianLioN/codex-problems-resolver"
+        client = FakeGhClient(
+            {
+                ("GET", f"/repos/{repo}"): matching_builtin_repo(),
+                ("GET", f"/repos/{repo}/actions/permissions"): matching_actions_permissions(),
+                ("GET", f"/repos/{repo}/actions/permissions/workflow"): matching_workflow_permissions(),
+                ("GET", f"/repos/{repo}/rulesets"): [matching_ruleset()],
+                ("GET", f"/repos/{repo}/rulesets/101"): matching_ruleset(),
+            }
+        )
+        policy = repository_policy.load_policy(POLICY_PATH)
+
+        result = repository_policy.check_policy(policy, repo, client, mode="full")
+
+        self.assertEqual(1, result.exit_code)
+        self.assertEqual(
+            [
+                "DRIFT repository.allow_merge_commit: expected false actual null",
+                "DRIFT repository.allow_rebase_merge: expected false actual null",
+                "DRIFT repository.allow_squash_merge: expected true actual null",
+                "DRIFT repository.delete_branch_on_merge: expected true actual null",
             ],
             result.lines,
         )
@@ -288,6 +376,7 @@ class RepositoryPolicyTests(unittest.TestCase):
         self.assertEqual(0, result.exit_code)
         self.assertEqual(
             [
+                "NOTICE: builtin mode did not check repository merge settings",
                 "NOTICE: builtin mode did not check Actions settings",
                 "NOTICE: builtin mode did not verify ruleset bypass_actors because the field is not visible",
             ],
@@ -665,6 +754,7 @@ class RepositoryPolicyTests(unittest.TestCase):
         self.assertEqual(0, result.exit_code)
         self.assertEqual(
             [
+                "NOTICE: builtin mode did not check repository merge settings",
                 "NOTICE: builtin mode did not check Actions settings",
                 "NOTICE: builtin mode cannot verify classic branch protection because it requires Repository Administration read permission",
             ],
