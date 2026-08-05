@@ -146,6 +146,64 @@ jobs:
             result.errors,
         )
 
+    def test_quoted_external_uses_must_be_pinned_to_full_sha(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            shutil.copytree(Path(__file__).resolve().parents[1], root, dirs_exist_ok=True)
+            workflow = root / ".github" / "workflows" / "governance.yml"
+            workflow.write_text(
+                """
+name: quoted
+on:
+  workflow_dispatch:
+jobs:
+  validate:
+    uses: "owner/repo/.github/workflows/reusable.yml@v1" # quoted reusable
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: 'actions/checkout@v4'
+""".lstrip(),
+                encoding="utf-8",
+            )
+
+            result = validate_repository.validate_root(root)
+
+        self.assertIn(
+            ".github/workflows/governance.yml: external uses entry is not pinned to a full 40-hex SHA: owner/repo/.github/workflows/reusable.yml@v1",
+            result.errors,
+        )
+        self.assertIn(
+            ".github/workflows/governance.yml: external uses entry is not pinned to a full 40-hex SHA: actions/checkout@v4",
+            result.errors,
+        )
+
+    def test_quoted_full_sha_and_quoted_local_uses_are_allowed(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            shutil.copytree(Path(__file__).resolve().parents[1], root, dirs_exist_ok=True)
+            workflow = root / ".github" / "workflows" / "governance.yml"
+            workflow.write_text(
+                """
+name: quoted-pinned
+on:
+  workflow_dispatch:
+jobs:
+  validate:
+    uses: "owner/repo/.github/workflows/reusable.yml@11d5960a326750d5838078e36cf38b85af677262" # quoted full sha
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: './.github/actions/local'
+      - uses: "actions/checkout@11d5960a326750d5838078e36cf38b85af677262" # quoted full sha
+""".lstrip(),
+                encoding="utf-8",
+            )
+
+            result = validate_repository.validate_root(root)
+
+        self.assertEqual([], [error for error in result.errors if "external uses entry" in error])
+
     def test_policy_schema_errors_are_reported(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

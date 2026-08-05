@@ -479,11 +479,18 @@ def _upsert_ruleset_or_fallback(policy: dict[str, Any], repo: str, client: Any) 
             return False
         except GhApiError as exc:
             if _is_ruleset_feature_unavailable(exc):
-                client.call(
-                    "PUT",
-                    f"/repos/{repo}/branches/{policy['default_branch']}/protection",
-                    expected_classic_branch_protection(policy),
-                )
+                try:
+                    client.call(
+                        "PUT",
+                        f"/repos/{repo}/branches/{policy['default_branch']}/protection",
+                        expected_classic_branch_protection(policy),
+                    )
+                except GhApiError as fallback_exc:
+                    raise GhApiError(
+                        f"ruleset creation unavailable: {exc.message}; classic fallback failed: {fallback_exc.message}",
+                        exit_code=2,
+                        status=fallback_exc.status,
+                    ) from fallback_exc
                 return True
             raise
     if _needs_update(normalize_ruleset(payload), normalize_ruleset(_without_ids(existing))):

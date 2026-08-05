@@ -567,7 +567,12 @@ class RepositoryPolicyTests(unittest.TestCase):
         result = repository_policy.apply_policy(policy, repo, repo, client)
 
         self.assertEqual(2, result.exit_code)
-        self.assertIn("classic branch protection failed", result.lines[0])
+        self.assertEqual(
+            [
+                "ERROR: ruleset creation unavailable: rulesets feature is unavailable for this plan; classic fallback failed: classic branch protection failed",
+            ],
+            result.lines,
+        )
 
     def test_check_reports_classic_enforce_admins_drift(self):
         repo = "RussianLioN/codex-problems-resolver"

@@ -60,7 +60,7 @@ REQUIRED_HEADINGS = {
 
 TEXT_SUFFIXES = {".md", ".py", ".json", ".yml", ".yaml", ".gitignore"}
 FULL_SHA = re.compile(r"^[0-9a-f]{40}$")
-USES_LINE = re.compile(r"^\s*(?:-\s*)?uses:\s*([^@\s#]+)(?:@([^\s#]+))?\s*(?:#.*)?$")
+USES_LINE = re.compile(r"^\s*(?:-\s*)?uses:\s*([\"']?)([^@\s#\"']+)(?:@([^\s#\"']+))?\1\s*(?:#.*)?$")
 LOCAL_ACTION_PREFIXES = ("./", "../")
 
 
@@ -195,7 +195,7 @@ def _check_workflow_uses(root: Path) -> list[str]:
             match = USES_LINE.match(line)
             if not match:
                 continue
-            action, ref = match.groups()
+            _, action, ref = match.groups()
             if action.startswith(LOCAL_ACTION_PREFIXES):
                 continue
             if ref is None or not FULL_SHA.match(ref):
