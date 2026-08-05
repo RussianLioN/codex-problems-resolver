@@ -117,7 +117,7 @@ def classic_policy_with_evidence():
         "operation": "POST /repos/RussianLioN/codex-problems-resolver/rulesets",
         "category": "plan_feature_unavailable",
         "message_excerpt": "rulesets feature is unavailable for this plan",
-        "tracked_reference": ".superpowers/sdd/task-2-report.md",
+        "tracked_reference": "docs/incidents/2026-08-05-ruleset-plan-limitation.md",
     }
     return policy
 
@@ -374,6 +374,29 @@ class RepositoryPolicyTests(unittest.TestCase):
         self.assertEqual(1, result.exit_code)
         self.assertEqual([], client.calls)
         self.assertIn("classic_evidence", result.lines[0])
+
+    def test_classic_evidence_rejects_unsafe_reference_paths_before_api_access(self):
+        unsafe_references = [
+            ".superpowers/sdd/task-2-report.md",
+            "docs/incidents/../secret.md",
+            "docs\\incidents\\2026-08-05-ruleset.md",
+            "/docs/incidents/2026-08-05-ruleset.md",
+            "docs/runbooks/2026-08-05-ruleset.md",
+            "docs/incidents/2026-08-05-ruleset.txt",
+        ]
+        repo = "RussianLioN/codex-problems-resolver"
+
+        for reference in unsafe_references:
+            with self.subTest(reference=reference):
+                client = FakeGhClient()
+                policy = classic_policy_with_evidence()
+                policy["main_protection"]["classic_evidence"]["tracked_reference"] = reference
+
+                result = repository_policy.check_policy(policy, repo, client)
+
+                self.assertEqual(1, result.exit_code)
+                self.assertEqual([], client.calls)
+                self.assertIn("tracked_reference", result.lines[0])
 
     def test_classic_backend_with_evidence_checks_only_classic_protection(self):
         repo = "RussianLioN/codex-problems-resolver"
@@ -669,6 +692,16 @@ class RepositoryPolicyTests(unittest.TestCase):
         self.assertEqual(1, result.exit_code)
         self.assertEqual(True, captured_payloads[0]["enforce_admins"])
 
+    def test_classic_branch_protection_payload_has_empty_bypass_allowances(self):
+        policy = classic_policy_with_evidence()
+
+        payload = repository_policy.expected_classic_branch_protection(policy)
+
+        self.assertEqual(
+            {"users": [], "teams": [], "apps": []},
+            payload["required_pull_request_reviews"]["bypass_pull_request_allowances"],
+        )
+
     def test_apply_feature_unavailable_returns_two_when_classic_fallback_fails(self):
         repo = "RussianLioN/codex-problems-resolver"
 
@@ -722,6 +755,43 @@ class RepositoryPolicyTests(unittest.TestCase):
             ["DRIFT classic_branch_protection.enforce_admins: expected true actual false"],
             result.lines,
         )
+
+    def test_check_reports_classic_bypass_user_allowance_drift(self):
+        self._assert_classic_bypass_allowance_drift(
+            {"users": [{"login": "octocat"}], "teams": [], "apps": []},
+            'DRIFT classic_branch_protection.required_pull_request_reviews.bypass_pull_request_allowances.users: expected [] actual [{"login": "octocat"}]',
+        )
+
+    def test_check_reports_classic_bypass_team_allowance_drift(self):
+        self._assert_classic_bypass_allowance_drift(
+            {"users": [], "teams": [{"slug": "admins"}], "apps": []},
+            'DRIFT classic_branch_protection.required_pull_request_reviews.bypass_pull_request_allowances.teams: expected [] actual [{"slug": "admins"}]',
+        )
+
+    def test_check_reports_classic_bypass_app_allowance_drift(self):
+        self._assert_classic_bypass_allowance_drift(
+            {"users": [], "teams": [], "apps": [{"slug": "deploy-bot"}]},
+            'DRIFT classic_branch_protection.required_pull_request_reviews.bypass_pull_request_allowances.apps: expected [] actual [{"slug": "deploy-bot"}]',
+        )
+
+    def _assert_classic_bypass_allowance_drift(self, allowances, expected_line):
+        repo = "RussianLioN/codex-problems-resolver"
+        policy = classic_policy_with_evidence()
+        live_protection = repository_policy.expected_classic_branch_protection(policy)
+        live_protection["required_pull_request_reviews"]["bypass_pull_request_allowances"] = allowances
+        client = FakeGhClient(
+            {
+                ("GET", f"/repos/{repo}"): matching_repo(),
+                ("GET", f"/repos/{repo}/actions/permissions"): matching_actions_permissions(),
+                ("GET", f"/repos/{repo}/actions/permissions/workflow"): matching_workflow_permissions(),
+                ("GET", f"/repos/{repo}/branches/main/protection"): live_protection,
+            }
+        )
+
+        result = repository_policy.check_policy(policy, repo, client)
+
+        self.assertEqual(1, result.exit_code)
+        self.assertEqual([expected_line], result.lines)
 
     def test_apply_ruleset_not_found_without_feature_evidence_returns_two_and_does_not_use_classic(self):
         repo = "RussianLioN/codex-problems-resolver"

@@ -8,7 +8,7 @@ import json
 import subprocess
 import sys
 from dataclasses import dataclass
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Any
 
 
@@ -153,7 +153,27 @@ def _validate_classic_evidence(policy: dict[str, Any], protection: dict[str, Any
         errors.append("main_protection.classic_evidence.message_excerpt must mention ruleset(s) and plan/feature")
     if not evidence.get("tracked_reference"):
         errors.append("main_protection.classic_evidence.tracked_reference is required")
+    else:
+        reference = str(evidence["tracked_reference"])
+        if not _is_safe_classic_evidence_reference(reference):
+            errors.append(
+                "main_protection.classic_evidence.tracked_reference must be a safe relative .md path under docs/incidents/"
+            )
     return errors
+
+
+def _is_safe_classic_evidence_reference(reference: str) -> bool:
+    if "\\" in reference or reference.startswith("/") or reference.startswith(".superpowers/"):
+        return False
+    path = PurePosixPath(reference)
+    return (
+        not path.is_absolute()
+        and path.suffix == ".md"
+        and len(path.parts) > 2
+        and path.parts[0] == "docs"
+        and path.parts[1] == "incidents"
+        and ".." not in path.parts
+    )
 
 
 def expected_repository_settings(policy: dict[str, Any]) -> dict[str, Any]:
@@ -239,6 +259,7 @@ def expected_classic_branch_protection(policy: dict[str, Any]) -> dict[str, Any]
             "dismiss_stale_reviews": False,
             "require_code_owner_reviews": False,
             "require_last_push_approval": False,
+            "bypass_pull_request_allowances": {"users": [], "teams": [], "apps": []},
         },
         "restrictions": None,
         "required_linear_history": True,
@@ -329,6 +350,9 @@ def _normalize_classic_protection(raw: dict[str, Any]) -> dict[str, Any]:
             "dismiss_stale_reviews": reviews.get("dismiss_stale_reviews", False),
             "require_code_owner_reviews": reviews.get("require_code_owner_reviews", False),
             "require_last_push_approval": reviews.get("require_last_push_approval", False),
+            "bypass_pull_request_allowances": _normalize_bypass_pull_request_allowances(
+                reviews.get("bypass_pull_request_allowances")
+            ),
         },
         "restrictions": None,
         "required_linear_history": _enabled_value(raw.get("required_linear_history")),
@@ -342,6 +366,17 @@ def _enabled_value(value: Any) -> bool:
     if isinstance(value, dict):
         return bool(value.get("enabled", False))
     return bool(value)
+
+
+def _normalize_bypass_pull_request_allowances(value: Any) -> dict[str, list[dict[str, Any]]]:
+    allowances = value or {}
+    return {
+        key: sorted(
+            allowances.get(key) or [],
+            key=lambda item: json.dumps(item, ensure_ascii=False, sort_keys=True),
+        )
+        for key in ("users", "teams", "apps")
+    }
 
 
 def check_policy(policy: dict[str, Any], repo: str, client: Any, mode: str = "full") -> CommandResult:

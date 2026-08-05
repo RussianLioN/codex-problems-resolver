@@ -74,6 +74,7 @@ def validate_root(root: Path | str = Path(".")) -> ValidationResult:
     errors: list[str] = []
     errors.extend(_check_required_paths(root))
     errors.extend(_check_text_files(root))
+    errors.extend(_check_agents_word_count(root))
     errors.extend(_check_required_headings(root))
     errors.extend(_check_policy(root))
     errors.extend(_check_workflow_uses(root))
@@ -119,6 +120,17 @@ def _check_required_paths(root: Path) -> list[str]:
         if required not in visible:
             errors.append(f"{required}: required repository path is missing or ignored")
     return errors
+
+
+def _check_agents_word_count(root: Path) -> list[str]:
+    path = root / "AGENTS.md"
+    if not path.exists():
+        return []
+    text = path.read_text(encoding="utf-8")
+    count = len(re.findall(r"\S+", text))
+    if count < 200 or count > 400:
+        return [f"AGENTS.md: word count must be between 200 and 400 words, got {count}"]
+    return []
 
 
 def _git_path_is_tracked(root: Path, rel: str) -> bool:
@@ -181,7 +193,26 @@ def _check_policy(root: Path) -> list[str]:
         policy = json.loads(path.read_text(encoding="utf-8"))
     except json.JSONDecodeError as exc:
         return [f"{rel}: invalid JSON: {exc}"]
-    return [f"{rel}: {error}" for error in repository_policy.validate_policy(policy)]
+    errors = [f"{rel}: {error}" for error in repository_policy.validate_policy(policy)]
+    errors.extend(_check_classic_evidence_reference(root, policy, rel))
+    return errors
+
+
+def _check_classic_evidence_reference(root: Path, policy: dict, policy_rel: str) -> list[str]:
+    protection = policy.get("main_protection") or {}
+    if protection.get("backend") != "classic":
+        return []
+    evidence = protection.get("classic_evidence") or {}
+    reference = evidence.get("tracked_reference")
+    if not isinstance(reference, str) or not repository_policy._is_safe_classic_evidence_reference(reference):
+        return []
+    reference_path = root / reference
+    if not reference_path.exists() or not reference_path.is_file():
+        return [f"{policy_rel}: classic_evidence.tracked_reference does not exist: {reference}"]
+    _, is_git_checkout = _git_visible_paths(root)
+    if is_git_checkout and not _git_path_is_tracked(root, reference):
+        return [f"{policy_rel}: classic_evidence.tracked_reference must be tracked by Git: {reference}"]
+    return []
 
 
 def _check_workflow_uses(root: Path) -> list[str]:

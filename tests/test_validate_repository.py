@@ -111,6 +111,97 @@ class ValidateRepositoryTests(unittest.TestCase):
             result.errors,
         )
 
+    def test_agents_md_word_count_must_be_between_200_and_400_words(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            shutil.copytree(Path(__file__).resolve().parents[1], root, dirs_exist_ok=True)
+            (root / "AGENTS.md").write_text("word " * 199 + "\n", encoding="utf-8")
+
+            low_result = validate_repository.validate_root(root)
+
+            (root / "AGENTS.md").write_text("word " * 401 + "\n", encoding="utf-8")
+
+            high_result = validate_repository.validate_root(root)
+
+        self.assertIn("AGENTS.md: word count must be between 200 and 400 words, got 199", low_result.errors)
+        self.assertIn("AGENTS.md: word count must be between 200 and 400 words, got 401", high_result.errors)
+
+    def test_current_agents_md_word_count_is_valid(self):
+        result = validate_repository.validate_root(Path(__file__).resolve().parents[1])
+
+        self.assertNotIn(
+            "AGENTS.md: word count must be between 200 and 400 words, got 328",
+            result.errors,
+        )
+
+    def test_classic_evidence_reference_must_exist_in_plain_tree(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            shutil.copytree(Path(__file__).resolve().parents[1], root, dirs_exist_ok=True)
+            policy = self._write_classic_policy(root, "docs/incidents/2026-08-05-ruleset-plan-limitation.md")
+
+            result = validate_repository.validate_root(root)
+
+        self.assertIn(
+            f"{policy}: classic_evidence.tracked_reference does not exist: docs/incidents/2026-08-05-ruleset-plan-limitation.md",
+            result.errors,
+        )
+
+    def test_classic_evidence_reference_must_be_tracked_in_git_checkout(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            shutil.copytree(Path(__file__).resolve().parents[1], root, dirs_exist_ok=True)
+            subprocess.run(["git", "init"], cwd=root, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+            subprocess.run(["git", "add", "."], cwd=root, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+            evidence = root / "docs" / "incidents" / "2026-08-05-ruleset-plan-limitation.md"
+            evidence.parent.mkdir(parents=True, exist_ok=True)
+            evidence.write_text("# Evidence\n", encoding="utf-8")
+            policy = self._write_classic_policy(root, evidence.relative_to(root).as_posix())
+
+            result = validate_repository.validate_root(root)
+
+        self.assertIn(
+            f"{policy}: classic_evidence.tracked_reference must be tracked by Git: docs/incidents/2026-08-05-ruleset-plan-limitation.md",
+            result.errors,
+        )
+
+    def test_classic_evidence_reference_tracked_file_is_valid(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            shutil.copytree(Path(__file__).resolve().parents[1], root, dirs_exist_ok=True)
+            evidence = root / "docs" / "incidents" / "2026-08-05-ruleset-plan-limitation.md"
+            evidence.parent.mkdir(parents=True, exist_ok=True)
+            evidence.write_text("# Evidence\n", encoding="utf-8")
+            policy = self._write_classic_policy(root, evidence.relative_to(root).as_posix())
+            subprocess.run(["git", "init"], cwd=root, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+            subprocess.run(["git", "add", "."], cwd=root, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+
+            result = validate_repository.validate_root(root)
+
+        self.assertNotIn(
+            f"{policy}: classic_evidence.tracked_reference must be tracked by Git: docs/incidents/2026-08-05-ruleset-plan-limitation.md",
+            result.errors,
+        )
+        self.assertNotIn(
+            f"{policy}: classic_evidence.tracked_reference does not exist: docs/incidents/2026-08-05-ruleset-plan-limitation.md",
+            result.errors,
+        )
+
+    def _write_classic_policy(self, root, reference):
+        rel = "ops/github/repository-policy.json"
+        policy_path = root / rel
+        data = json.loads(policy_path.read_text(encoding="utf-8"))
+        data["main_protection"]["backend"] = "classic"
+        data["main_protection"]["classic_evidence"] = {
+            "status": 403,
+            "operation": "POST /repos/RussianLioN/codex-problems-resolver/rulesets",
+            "category": "plan_feature_unavailable",
+            "message_excerpt": "rulesets feature is unavailable for this plan",
+            "tracked_reference": reference,
+        }
+        policy_path.write_text(json.dumps(data, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+        return rel
+
     def test_job_level_reusable_workflow_uses_must_be_pinned_to_full_sha(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
