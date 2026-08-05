@@ -187,6 +187,46 @@ class ValidateRepositoryTests(unittest.TestCase):
             result.errors,
         )
 
+    def test_classic_evidence_reference_ignored_file_is_reported_in_git_checkout(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            shutil.copytree(Path(__file__).resolve().parents[1], root, dirs_exist_ok=True)
+            subprocess.run(["git", "init"], cwd=root, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+            (root / ".gitignore").write_text("docs/incidents/*.md\n", encoding="utf-8")
+            evidence = root / "docs" / "incidents" / "ignored.md"
+            evidence.parent.mkdir(parents=True, exist_ok=True)
+            evidence.write_text("# Evidence\n", encoding="utf-8")
+            policy = self._write_classic_policy(root, evidence.relative_to(root).as_posix())
+
+            result = validate_repository.validate_root(root)
+
+        self.assertIn(
+            f"{policy}: classic_evidence.tracked_reference must be tracked by Git: docs/incidents/ignored.md",
+            result.errors,
+        )
+
+    def test_classic_evidence_reference_symlink_is_reported_in_git_checkout(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            shutil.copytree(Path(__file__).resolve().parents[1], root, dirs_exist_ok=True)
+            subprocess.run(["git", "init"], cwd=root, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+            target = root / "target.md"
+            target.write_text("# Target\n", encoding="utf-8")
+            evidence = root / "docs" / "incidents" / "symlink.md"
+            evidence.parent.mkdir(parents=True, exist_ok=True)
+            if evidence.exists() or evidence.is_symlink():
+                evidence.unlink()
+            evidence.symlink_to(target)
+            policy = self._write_classic_policy(root, evidence.relative_to(root).as_posix())
+            subprocess.run(["git", "add", "."], cwd=root, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+
+            result = validate_repository.validate_root(root)
+
+        self.assertIn(
+            f"{policy}: classic_evidence.tracked_reference must be a regular tracked file, not a symlink: docs/incidents/symlink.md",
+            result.errors,
+        )
+
     def _write_classic_policy(self, root, reference):
         rel = "ops/github/repository-policy.json"
         policy_path = root / rel

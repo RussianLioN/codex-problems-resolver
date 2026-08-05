@@ -194,25 +194,10 @@ def _check_policy(root: Path) -> list[str]:
     except json.JSONDecodeError as exc:
         return [f"{rel}: invalid JSON: {exc}"]
     errors = [f"{rel}: {error}" for error in repository_policy.validate_policy(policy)]
-    errors.extend(_check_classic_evidence_reference(root, policy, rel))
+    errors.extend(
+        f"{rel}: {error}" for error in repository_policy.validate_classic_evidence_artifact(policy, root)
+    )
     return errors
-
-
-def _check_classic_evidence_reference(root: Path, policy: dict, policy_rel: str) -> list[str]:
-    protection = policy.get("main_protection") or {}
-    if protection.get("backend") != "classic":
-        return []
-    evidence = protection.get("classic_evidence") or {}
-    reference = evidence.get("tracked_reference")
-    if not isinstance(reference, str) or not repository_policy._is_safe_classic_evidence_reference(reference):
-        return []
-    reference_path = root / reference
-    if not reference_path.exists() or not reference_path.is_file():
-        return [f"{policy_rel}: classic_evidence.tracked_reference does not exist: {reference}"]
-    _, is_git_checkout = _git_visible_paths(root)
-    if is_git_checkout and not _git_path_is_tracked(root, reference):
-        return [f"{policy_rel}: classic_evidence.tracked_reference must be tracked by Git: {reference}"]
-    return []
 
 
 def _check_workflow_uses(root: Path) -> list[str]:

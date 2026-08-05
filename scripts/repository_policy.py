@@ -176,6 +176,84 @@ def _is_safe_classic_evidence_reference(reference: str) -> bool:
     )
 
 
+def validate_classic_evidence_artifact(policy: dict[str, Any], root: Path | str = Path(".")) -> list[str]:
+    protection = policy.get("main_protection") or {}
+    if protection.get("backend") != "classic":
+        return []
+    evidence = protection.get("classic_evidence") or {}
+    reference = evidence.get("tracked_reference")
+    if not isinstance(reference, str) or not _is_safe_classic_evidence_reference(reference):
+        return []
+
+    root_path = Path(root).resolve()
+    reference_path = root_path.joinpath(*PurePosixPath(reference).parts)
+    try:
+        resolved_reference = reference_path.resolve(strict=False)
+        resolved_reference.relative_to(root_path)
+    except ValueError:
+        return [f"classic_evidence.tracked_reference must stay under repository root: {reference}"]
+
+    if reference_path.is_symlink():
+        return [f"classic_evidence.tracked_reference must be a regular tracked file, not a symlink: {reference}"]
+    if not reference_path.exists():
+        return [f"classic_evidence.tracked_reference does not exist: {reference}"]
+    if not reference_path.is_file():
+        return [f"classic_evidence.tracked_reference must be a regular tracked file: {reference}"]
+    if _is_git_checkout(root_path) and not _git_path_is_tracked(root_path, reference):
+        return [f"classic_evidence.tracked_reference must be tracked by Git: {reference}"]
+    return []
+
+
+def _is_git_checkout(root: Path) -> bool:
+    try:
+        completed = subprocess.run(
+            ["git", "-C", str(root), "rev-parse", "--is-inside-work-tree"],
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            check=False,
+        )
+    except FileNotFoundError:
+        return False
+    return completed.returncode == 0 and completed.stdout.strip() == "true"
+
+
+def _git_path_is_tracked(root: Path, reference: str) -> bool:
+    try:
+        completed = subprocess.run(
+            ["git", "-C", str(root), "ls-files", "--error-unmatch", "--", reference],
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            check=False,
+        )
+    except FileNotFoundError:
+        return False
+    return completed.returncode == 0
+
+
+def resolve_policy_root(policy_path: Path | str = DEFAULT_POLICY_PATH) -> Path:
+    path = Path(policy_path)
+    absolute_path = path if path.is_absolute() else Path.cwd() / path
+    policy_dir = absolute_path.parent.resolve()
+    try:
+        completed = subprocess.run(
+            ["git", "-C", str(policy_dir), "rev-parse", "--show-toplevel"],
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            check=False,
+        )
+        if completed.returncode == 0 and completed.stdout.strip():
+            return Path(completed.stdout.strip()).resolve()
+    except FileNotFoundError:
+        pass
+    parts = absolute_path.parts
+    if len(parts) >= 3 and parts[-3:] == ("ops", "github", "repository-policy.json"):
+        return absolute_path.parents[2].resolve()
+    return Path.cwd().resolve()
+
+
 def expected_repository_settings(policy: dict[str, Any]) -> dict[str, Any]:
     return {
         "private": policy["visibility"] == "private",
@@ -379,8 +457,14 @@ def _normalize_bypass_pull_request_allowances(value: Any) -> dict[str, list[dict
     }
 
 
-def check_policy(policy: dict[str, Any], repo: str, client: Any, mode: str = "full") -> CommandResult:
-    validation_errors = validate_policy(policy)
+def check_policy(
+    policy: dict[str, Any],
+    repo: str,
+    client: Any,
+    mode: str = "full",
+    repo_root: Path | str = Path("."),
+) -> CommandResult:
+    validation_errors = [*validate_policy(policy), *validate_classic_evidence_artifact(policy, repo_root)]
     if validation_errors:
         return CommandResult(1, [f"POLICY {error}" for error in validation_errors])
     if mode not in {"full", "builtin"}:
@@ -484,13 +568,19 @@ def _needs_update(expected: dict[str, Any], actual: dict[str, Any]) -> bool:
     return bool(_diff(expected, actual, "state"))
 
 
-def apply_policy(policy: dict[str, Any], repo: str, confirm: str, client: Any) -> CommandResult:
+def apply_policy(
+    policy: dict[str, Any],
+    repo: str,
+    confirm: str,
+    client: Any,
+    repo_root: Path | str = Path("."),
+) -> CommandResult:
     if confirm != repo or confirm != policy.get("repository"):
         return CommandResult(
             1,
             [f"--confirm must exactly match --repo and policy repository ({policy.get('repository')}) before any API call"],
         )
-    validation_errors = validate_policy(policy)
+    validation_errors = [*validate_policy(policy), *validate_classic_evidence_artifact(policy, repo_root)]
     if validation_errors:
         return CommandResult(1, [f"POLICY {error}" for error in validation_errors])
 
@@ -523,7 +613,7 @@ def apply_policy(policy: dict[str, Any], repo: str, confirm: str, client: Any) -
             )
         else:
             fallback_applied = _upsert_ruleset_or_fallback(policy, repo, client)
-        result = check_policy(policy, repo, client)
+        result = check_policy(policy, repo, client, repo_root=repo_root)
         if fallback_applied and result.exit_code == 1:
             return CommandResult(
                 1,
@@ -617,9 +707,10 @@ def main(argv: list[str] | None = None) -> int:
     except (OSError, json.JSONDecodeError) as exc:
         print(f"ERROR: cannot read policy: {exc}")
         return 1
+    policy_root = resolve_policy_root(args.policy)
 
     if args.command == "validate":
-        errors = validate_policy(policy)
+        errors = [*validate_policy(policy), *validate_classic_evidence_artifact(policy, policy_root)]
         if errors:
             for error in errors:
                 print(f"POLICY {error}")
@@ -629,9 +720,9 @@ def main(argv: list[str] | None = None) -> int:
 
     client = GhClient()
     if args.command == "check":
-        return _print_result(check_policy(policy, args.repo, client, mode=args.mode))
+        return _print_result(check_policy(policy, args.repo, client, mode=args.mode, repo_root=policy_root))
     if args.command == "apply":
-        return _print_result(apply_policy(policy, args.repo, args.confirm, client))
+        return _print_result(apply_policy(policy, args.repo, args.confirm, client, repo_root=policy_root))
     return 2
 
 

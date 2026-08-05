@@ -1,5 +1,7 @@
 import io
 import json
+import subprocess
+import tempfile
 import unittest
 import copy
 from pathlib import Path
@@ -109,7 +111,7 @@ def matching_client():
     )
 
 
-def classic_policy_with_evidence():
+def classic_policy_with_evidence(reference="docs/incidents/README.md"):
     policy = copy.deepcopy(repository_policy.load_policy(POLICY_PATH))
     policy["main_protection"]["backend"] = "classic"
     policy["main_protection"]["classic_evidence"] = {
@@ -117,9 +119,26 @@ def classic_policy_with_evidence():
         "operation": "POST /repos/RussianLioN/codex-problems-resolver/rulesets",
         "category": "plan_feature_unavailable",
         "message_excerpt": "rulesets feature is unavailable for this plan",
-        "tracked_reference": "docs/incidents/2026-08-05-ruleset-plan-limitation.md",
+        "tracked_reference": reference,
     }
     return policy
+
+
+def init_git_repo(root):
+    subprocess.run(["git", "init"], cwd=root, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    subprocess.run(["git", "config", "user.email", "test@example.invalid"], cwd=root, check=True)
+    subprocess.run(["git", "config", "user.name", "Test User"], cwd=root, check=True)
+
+
+def write_evidence(root, reference="docs/incidents/evidence.md"):
+    path = root / reference
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text("# Evidence\n", encoding="utf-8")
+    return path
+
+
+def track_path(root, reference):
+    subprocess.run(["git", "add", reference], cwd=root, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
 
 
 class RepositoryPolicyTests(unittest.TestCase):
@@ -397,6 +416,184 @@ class RepositoryPolicyTests(unittest.TestCase):
                 self.assertEqual(1, result.exit_code)
                 self.assertEqual([], client.calls)
                 self.assertIn("tracked_reference", result.lines[0])
+
+    def test_check_classic_missing_evidence_refuses_before_api_access(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            init_git_repo(root)
+            repo = "RussianLioN/codex-problems-resolver"
+            client = FakeGhClient()
+            policy = classic_policy_with_evidence("docs/incidents/evidence.md")
+            policy["main_protection"]["classic_evidence"]["tracked_reference"] = "docs/incidents/missing.md"
+
+            result = repository_policy.check_policy(policy, repo, client, repo_root=root)
+
+        self.assertEqual(1, result.exit_code)
+        self.assertEqual([], client.calls)
+        self.assertEqual(
+            ["POLICY classic_evidence.tracked_reference does not exist: docs/incidents/missing.md"],
+            result.lines,
+        )
+
+    def test_apply_classic_missing_evidence_refuses_before_api_access(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            init_git_repo(root)
+            repo = "RussianLioN/codex-problems-resolver"
+            client = FakeGhClient()
+            policy = classic_policy_with_evidence("docs/incidents/evidence.md")
+            policy["main_protection"]["classic_evidence"]["tracked_reference"] = "docs/incidents/missing.md"
+
+            result = repository_policy.apply_policy(policy, repo, repo, client, repo_root=root)
+
+        self.assertEqual(1, result.exit_code)
+        self.assertEqual([], client.calls)
+        self.assertEqual(
+            ["POLICY classic_evidence.tracked_reference does not exist: docs/incidents/missing.md"],
+            result.lines,
+        )
+
+    def test_check_classic_untracked_evidence_refuses_before_api_access(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            init_git_repo(root)
+            repo = "RussianLioN/codex-problems-resolver"
+            client = FakeGhClient()
+            policy = classic_policy_with_evidence("docs/incidents/evidence.md")
+            write_evidence(root)
+
+            result = repository_policy.check_policy(policy, repo, client, repo_root=root)
+
+        self.assertEqual(1, result.exit_code)
+        self.assertEqual([], client.calls)
+        self.assertEqual(
+            ["POLICY classic_evidence.tracked_reference must be tracked by Git: docs/incidents/evidence.md"],
+            result.lines,
+        )
+
+    def test_check_classic_ignored_evidence_refuses_before_api_access(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            init_git_repo(root)
+            (root / ".gitignore").write_text("docs/incidents/*.md\n", encoding="utf-8")
+            repo = "RussianLioN/codex-problems-resolver"
+            client = FakeGhClient()
+            policy = classic_policy_with_evidence("docs/incidents/evidence.md")
+            write_evidence(root)
+
+            result = repository_policy.check_policy(policy, repo, client, repo_root=root)
+
+        self.assertEqual(1, result.exit_code)
+        self.assertEqual([], client.calls)
+        self.assertEqual(
+            ["POLICY classic_evidence.tracked_reference must be tracked by Git: docs/incidents/evidence.md"],
+            result.lines,
+        )
+
+    def test_check_classic_symlink_evidence_refuses_before_api_access(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            init_git_repo(root)
+            target = root / "target.md"
+            target.write_text("# Target\n", encoding="utf-8")
+            evidence = root / "docs" / "incidents" / "evidence.md"
+            evidence.parent.mkdir(parents=True, exist_ok=True)
+            evidence.symlink_to(target)
+            track_path(root, "docs/incidents/evidence.md")
+            repo = "RussianLioN/codex-problems-resolver"
+            client = FakeGhClient()
+            policy = classic_policy_with_evidence("docs/incidents/evidence.md")
+
+            result = repository_policy.check_policy(policy, repo, client, repo_root=root)
+
+        self.assertEqual(1, result.exit_code)
+        self.assertEqual([], client.calls)
+        self.assertEqual(
+            ["POLICY classic_evidence.tracked_reference must be a regular tracked file, not a symlink: docs/incidents/evidence.md"],
+            result.lines,
+        )
+
+    def test_check_classic_tracked_evidence_allows_api_access(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            init_git_repo(root)
+            write_evidence(root)
+            track_path(root, "docs/incidents/evidence.md")
+            repo = "RussianLioN/codex-problems-resolver"
+            policy = classic_policy_with_evidence("docs/incidents/evidence.md")
+            client = FakeGhClient(
+                {
+                    ("GET", f"/repos/{repo}"): matching_repo(),
+                    ("GET", f"/repos/{repo}/actions/permissions"): matching_actions_permissions(),
+                    ("GET", f"/repos/{repo}/actions/permissions/workflow"): matching_workflow_permissions(),
+                    ("GET", f"/repos/{repo}/branches/main/protection"): repository_policy.expected_classic_branch_protection(
+                        policy
+                    ),
+                }
+            )
+
+            result = repository_policy.check_policy(policy, repo, client, repo_root=root)
+
+        self.assertEqual(0, result.exit_code)
+        self.assertTrue(client.calls)
+
+    def test_apply_classic_tracked_evidence_allows_api_access(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            init_git_repo(root)
+            write_evidence(root)
+            track_path(root, "docs/incidents/evidence.md")
+            repo = "RussianLioN/codex-problems-resolver"
+            policy = classic_policy_with_evidence("docs/incidents/evidence.md")
+            protected = {"done": False}
+
+            def put_protection(method, path, payload):
+                protected["done"] = True
+                return {}
+
+            def get_protection(method, path, payload):
+                if protected["done"]:
+                    return repository_policy.expected_classic_branch_protection(policy)
+                raise repository_policy.GhApiError("branch not protected", exit_code=2, status=404)
+
+            client = FakeGhClient(
+                {
+                    ("GET", f"/repos/{repo}"): matching_repo(),
+                    ("GET", f"/repos/{repo}/actions/permissions"): matching_actions_permissions(),
+                    ("GET", f"/repos/{repo}/actions/permissions/workflow"): matching_workflow_permissions(),
+                    ("PUT", f"/repos/{repo}/branches/main/protection"): put_protection,
+                    ("GET", f"/repos/{repo}/branches/main/protection"): get_protection,
+                }
+            )
+
+            result = repository_policy.apply_policy(policy, repo, repo, client, repo_root=root)
+
+        self.assertEqual(0, result.exit_code)
+        self.assertIn(("PUT", f"/repos/{repo}/branches/main/protection"), [(m, p) for m, p, _ in client.calls])
+
+    def test_cli_check_policy_path_rejects_missing_evidence_before_github_access(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            init_git_repo(root)
+            policy_path = root / "ops" / "github" / "repository-policy.json"
+            policy_path.parent.mkdir(parents=True, exist_ok=True)
+            policy = classic_policy_with_evidence()
+            policy["main_protection"]["classic_evidence"]["tracked_reference"] = "docs/incidents/missing.md"
+            policy_path.write_text(json.dumps(policy, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+            client = FakeGhClient()
+
+            with mock.patch("repository_policy.GhClient", return_value=client):
+                with mock.patch("sys.stdout", new_callable=io.StringIO) as stdout:
+                    exit_code = repository_policy.main(
+                        ["check", "--repo", "RussianLioN/codex-problems-resolver", "--policy", str(policy_path)]
+                    )
+
+        self.assertEqual(1, exit_code)
+        self.assertEqual([], client.calls)
+        self.assertIn(
+            "POLICY classic_evidence.tracked_reference does not exist: docs/incidents/missing.md",
+            stdout.getvalue(),
+        )
 
     def test_classic_backend_with_evidence_checks_only_classic_protection(self):
         repo = "RussianLioN/codex-problems-resolver"
