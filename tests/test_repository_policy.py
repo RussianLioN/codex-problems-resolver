@@ -81,6 +81,8 @@ def matching_ruleset():
                     "dismiss_stale_reviews_on_push": False,
                     "require_code_owner_review": False,
                     "require_last_push_approval": False,
+                    "allowed_merge_methods": ["squash"],
+                    "required_reviewers": [],
                     "required_review_thread_resolution": True,
                 },
             },
@@ -88,6 +90,7 @@ def matching_ruleset():
                 "type": "required_status_checks",
                 "parameters": {
                     "strict_required_status_checks_policy": True,
+                    "do_not_enforce_on_create": False,
                     "required_status_checks": [{"context": "validate"}],
                 },
             },
@@ -159,6 +162,23 @@ class RepositoryPolicyTests(unittest.TestCase):
 
         self.assertEqual("ruleset", policy["main_protection"]["backend"])
         self.assertEqual([], policy["main_protection"]["bypass_actors"])
+
+    def test_policy_declares_canonical_ruleset_parameters(self):
+        policy = repository_policy.load_policy(POLICY_PATH)
+        protection = policy["main_protection"]
+
+        self.assertEqual(["squash"], protection["allowed_merge_methods"])
+        self.assertEqual([], protection["required_reviewers"])
+        self.assertEqual(False, protection["do_not_enforce_on_create"])
+
+    def test_ruleset_payload_declares_canonical_parameters(self):
+        policy = repository_policy.load_policy(POLICY_PATH)
+        payload = repository_policy.expected_ruleset_payload(policy)
+        rules = {rule["type"]: rule for rule in payload["rules"]}
+
+        self.assertEqual(["squash"], rules["pull_request"]["parameters"]["allowed_merge_methods"])
+        self.assertEqual([], rules["pull_request"]["parameters"]["required_reviewers"])
+        self.assertEqual(False, rules["required_status_checks"]["parameters"]["do_not_enforce_on_create"])
 
     def test_check_reports_deterministic_drift(self):
         client = matching_client()
@@ -324,6 +344,23 @@ class RepositoryPolicyTests(unittest.TestCase):
             ],
             result.lines,
         )
+
+    def test_check_reports_wide_ruleset_allowed_merge_methods_drift(self):
+        client = matching_client()
+        pull_request = next(
+            rule
+            for rule in client.responses[("GET", "/repos/RussianLioN/codex-problems-resolver/rulesets/101")]["rules"]
+            if rule["type"] == "pull_request"
+        )
+        pull_request["parameters"]["allowed_merge_methods"] = ["merge", "squash", "rebase"]
+        policy = repository_policy.load_policy(POLICY_PATH)
+
+        result = repository_policy.check_policy(policy, "RussianLioN/codex-problems-resolver", client)
+
+        self.assertEqual(1, result.exit_code)
+        self.assertEqual(1, len(result.lines))
+        self.assertIn('"allowed_merge_methods": ["squash"]', result.lines[0])
+        self.assertIn('"allowed_merge_methods": ["merge", "squash", "rebase"]', result.lines[0])
 
     def test_check_returns_two_for_auth_or_api_errors(self):
         repo = "RussianLioN/codex-problems-resolver"

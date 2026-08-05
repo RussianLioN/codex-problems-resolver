@@ -117,10 +117,13 @@ def validate_policy(policy: dict[str, Any]) -> list[str]:
         "exclude": [],
         "require_pull_request": True,
         "required_approving_review_count": 0,
+        "allowed_merge_methods": ["squash"],
+        "required_reviewers": [],
         "required_review_thread_resolution": True,
         "required_linear_history": True,
         "required_status_checks": ["validate"],
         "strict_required_status_checks_policy": True,
+        "do_not_enforce_on_create": False,
         "block_deletions": True,
         "block_force_pushes": True,
     }
@@ -304,6 +307,8 @@ def expected_ruleset_payload(policy: dict[str, Any]) -> dict[str, Any]:
                     "dismiss_stale_reviews_on_push": False,
                     "require_code_owner_review": False,
                     "require_last_push_approval": False,
+                    "allowed_merge_methods": protection["allowed_merge_methods"],
+                    "required_reviewers": protection["required_reviewers"],
                     "required_review_thread_resolution": protection["required_review_thread_resolution"],
                 },
             },
@@ -311,6 +316,7 @@ def expected_ruleset_payload(policy: dict[str, Any]) -> dict[str, Any]:
                 "type": "required_status_checks",
                 "parameters": {
                     "strict_required_status_checks_policy": protection["strict_required_status_checks_policy"],
+                    "do_not_enforce_on_create": protection["do_not_enforce_on_create"],
                     "required_status_checks": [
                         {"context": check} for check in protection["required_status_checks"]
                     ],
