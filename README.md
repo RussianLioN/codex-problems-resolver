@@ -35,9 +35,9 @@ python3 scripts/repository_policy.py check --repo RussianLioN/codex-problems-res
 python3 -m unittest discover -s tests -p 'test_*.py'
 ```
 
-`check` по умолчанию запускается в режиме `full` и проверяет настройки Actions, workflow permissions и полный ruleset detail. Для этого нужен отдельный fine-grained token или GitHub App только для `RussianLioN/codex-problems-resolver` с правом Repository Administration read. Не используйте широкий OAuth-токен пользователя.
+`check` по умолчанию запускается в режиме `full` и проверяет настройки Actions, права рабочих процессов и полное содержимое набора правил. Для этого нужен отдельный токен с точечными правами или GitHub App только для `RussianLioN/codex-problems-resolver` с правом чтения настроек репозитория (`Repository Administration: read`). Не используйте широкий OAuth-токен пользователя.
 
-Режим `builtin` предназначен для `github.token`: он не вызывает admin-only endpoints и выводит `NOTICE` для непроверенных Actions settings, `bypass_actors` или classic branch protection.
+Режим `builtin` предназначен для `github.token`: он не вызывает конечные точки, требующие административного чтения, и выводит `NOTICE` для непроверенных настроек Actions, поля `bypass_actors` или классической защиты ветки.
 
 После появления этих файлов они являются обязательными командами проверки для запросов на слияние. Для проверки пробелов и форматных ошибок в изменениях также используйте:
 

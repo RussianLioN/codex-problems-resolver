@@ -2,7 +2,7 @@ name: Инцидент Codex
 description: Зафиксировать воспроизводимый сбой, доказательства и риск
 title: "[incident]: "
 labels:
-  - incident
+  - bug
 body:
   - type: textarea
     id: symptom

@@ -406,8 +406,8 @@ def check_policy(policy: dict[str, Any], repo: str, client: Any, mode: str = "fu
     if lines:
         drift = [line for line in lines if line.startswith("DRIFT")]
         if drift:
-            return CommandResult(1, drift)
-        return CommandResult(0, lines)
+            return CommandResult(1, [*drift, *notices])
+        return CommandResult(0, [*lines, *notices])
     if notices:
         return CommandResult(0, notices)
     return CommandResult(0, ["OK: repository policy matches"])

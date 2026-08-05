@@ -209,6 +209,28 @@ class RepositoryPolicyTests(unittest.TestCase):
         self.assertNotIn(("GET", f"/repos/{repo}/actions/permissions"), [(m, p) for m, p, _ in client.calls])
         self.assertNotIn(("GET", f"/repos/{repo}/actions/permissions/workflow"), [(m, p) for m, p, _ in client.calls])
 
+    def test_builtin_mode_reports_scope_notice_alongside_observed_drift(self):
+        repo = "RussianLioN/codex-problems-resolver"
+        client = FakeGhClient(
+            {
+                ("GET", f"/repos/{repo}"): {**matching_repo(), "has_wiki": True},
+                ("GET", f"/repos/{repo}/rulesets"): [matching_ruleset()],
+                ("GET", f"/repos/{repo}/rulesets/101"): matching_ruleset(),
+            }
+        )
+        policy = repository_policy.load_policy(POLICY_PATH)
+
+        result = repository_policy.check_policy(policy, repo, client, mode="builtin")
+
+        self.assertEqual(1, result.exit_code)
+        self.assertEqual(
+            [
+                "DRIFT repository.has_wiki: expected false actual true",
+                "NOTICE: builtin mode did not check Actions settings",
+            ],
+            result.lines,
+        )
+
     def test_builtin_mode_missing_bypass_actors_reports_notice_without_claiming_full_ok(self):
         repo = "RussianLioN/codex-problems-resolver"
         ruleset = matching_ruleset()
