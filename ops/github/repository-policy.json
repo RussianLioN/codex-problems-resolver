@@ -1,0 +1,42 @@
+{
+  "schema_version": 1,
+  "repository": "RussianLioN/codex-problems-resolver",
+  "visibility": "private",
+  "default_branch": "main",
+  "features": {
+    "issues": true,
+    "wiki": false,
+    "projects": false
+  },
+  "merge": {
+    "squash": true,
+    "merge_commit": false,
+    "rebase": false,
+    "delete_branch_on_merge": true
+  },
+  "actions": {
+    "default_workflow_permissions": "read",
+    "workflow_pr_approval": false,
+    "sha_pinning_required": true,
+    "pin_external_uses_to_full_sha": true
+  },
+  "main_protection": {
+    "name": "main-protection",
+    "target": "branch",
+    "enforcement": "active",
+    "include": [
+      "~DEFAULT_BRANCH"
+    ],
+    "exclude": [],
+    "require_pull_request": true,
+    "required_approving_review_count": 0,
+    "required_review_thread_resolution": true,
+    "required_linear_history": true,
+    "required_status_checks": [
+      "validate"
+    ],
+    "strict_required_status_checks_policy": true,
+    "block_deletions": true,
+    "block_force_pushes": true
+  }
+}

@@ -1,0 +1,36 @@
+name: governance
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+  schedule:
+    - cron: "17 3 * * *"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: governance-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - run: python3 scripts/validate_repository.py
+      - run: python3 scripts/repository_policy.py validate
+      - run: python3 -m unittest discover -s tests -p 'test_*.py'
+
+  drift:
+    if: github.ref == 'refs/heads/main'
+    needs: validate
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - run: python3 scripts/repository_policy.py check --repo RussianLioN/codex-problems-resolver
+        env:
+          GH_TOKEN: ${{ github.token }}
