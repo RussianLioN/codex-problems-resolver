@@ -42,8 +42,24 @@ class ValidateRepositoryTests(unittest.TestCase):
         workflow = Path(__file__).resolve().parents[1] / ".github" / "workflows" / "governance.yml"
         text = workflow.read_text(encoding="utf-8")
 
+        self.assertIn("secrets.POLICY_AUDIT_TOKEN", text)
+        self.assertIn("name: Select drift check mode", text)
+        self.assertIn("DRIFT_MODE=full", text)
+        self.assertIn("DRIFT_MODE=builtin", text)
+        self.assertIn("--mode full", text)
+        self.assertIn("--mode builtin", text)
+        self.assertIn("GH_TOKEN: ${{ secrets.POLICY_AUDIT_TOKEN }}", text)
         self.assertIn("GH_TOKEN: ${{ github.token }}", text)
+        self.assertIn("::notice::POLICY_AUDIT_TOKEN is not configured; running builtin drift check", text)
+        self.assertIn("$GITHUB_STEP_SUMMARY", text)
         self.assertNotIn("--token", text)
+        self.assertNotIn("actions: read", text)
+
+    def test_governance_workflow_never_uses_github_token_for_full_drift_check(self):
+        workflow = Path(__file__).resolve().parents[1] / ".github" / "workflows" / "governance.yml"
+        text = workflow.read_text(encoding="utf-8")
+
+        self.assertNotIn("--mode full\n        env:\n          GH_TOKEN: ${{ github.token }}", text)
 
     def test_required_path_that_exists_but_is_git_ignored_is_reported(self):
         with tempfile.TemporaryDirectory() as tmp:

@@ -173,6 +173,82 @@ class RepositoryPolicyTests(unittest.TestCase):
             result.lines,
         )
 
+    def test_check_full_mode_actions_403_explains_repository_administration_read_token(self):
+        repo = "RussianLioN/codex-problems-resolver"
+        client = matching_client()
+        client.errors[("GET", f"/repos/{repo}/actions/permissions")] = repository_policy.GhApiError(
+            "Resource not accessible by integration", exit_code=2, status=403
+        )
+        policy = repository_policy.load_policy(POLICY_PATH)
+
+        result = repository_policy.check_policy(policy, repo, client, mode="full")
+
+        self.assertEqual(2, result.exit_code)
+        self.assertEqual(
+            [
+                "ERROR: full mode requires a token with Repository Administration read permission for /repos/RussianLioN/codex-problems-resolver/actions/permissions: Resource not accessible by integration",
+            ],
+            result.lines,
+        )
+
+    def test_builtin_mode_skips_admin_only_actions_and_reports_notice(self):
+        repo = "RussianLioN/codex-problems-resolver"
+        client = FakeGhClient(
+            {
+                ("GET", f"/repos/{repo}"): matching_repo(),
+                ("GET", f"/repos/{repo}/rulesets"): [matching_ruleset()],
+                ("GET", f"/repos/{repo}/rulesets/101"): matching_ruleset(),
+            }
+        )
+        policy = repository_policy.load_policy(POLICY_PATH)
+
+        result = repository_policy.check_policy(policy, repo, client, mode="builtin")
+
+        self.assertEqual(0, result.exit_code)
+        self.assertEqual(["NOTICE: builtin mode did not check Actions settings"], result.lines)
+        self.assertNotIn(("GET", f"/repos/{repo}/actions/permissions"), [(m, p) for m, p, _ in client.calls])
+        self.assertNotIn(("GET", f"/repos/{repo}/actions/permissions/workflow"), [(m, p) for m, p, _ in client.calls])
+
+    def test_builtin_mode_missing_bypass_actors_reports_notice_without_claiming_full_ok(self):
+        repo = "RussianLioN/codex-problems-resolver"
+        ruleset = matching_ruleset()
+        del ruleset["bypass_actors"]
+        client = FakeGhClient(
+            {
+                ("GET", f"/repos/{repo}"): matching_repo(),
+                ("GET", f"/repos/{repo}/rulesets"): [matching_ruleset()],
+                ("GET", f"/repos/{repo}/rulesets/101"): ruleset,
+            }
+        )
+        policy = repository_policy.load_policy(POLICY_PATH)
+
+        result = repository_policy.check_policy(policy, repo, client, mode="builtin")
+
+        self.assertEqual(0, result.exit_code)
+        self.assertEqual(
+            [
+                "NOTICE: builtin mode did not check Actions settings",
+                "NOTICE: builtin mode did not verify ruleset bypass_actors because the field is not visible",
+            ],
+            result.lines,
+        )
+
+    def test_full_mode_missing_bypass_actors_is_visibility_error(self):
+        repo = "RussianLioN/codex-problems-resolver"
+        client = matching_client()
+        del client.responses[("GET", f"/repos/{repo}/rulesets/101")]["bypass_actors"]
+        policy = repository_policy.load_policy(POLICY_PATH)
+
+        result = repository_policy.check_policy(policy, repo, client, mode="full")
+
+        self.assertEqual(2, result.exit_code)
+        self.assertEqual(
+            [
+                "ERROR: full mode cannot verify ruleset bypass_actors for main-protection; token lacks sufficient ruleset detail visibility",
+            ],
+            result.lines,
+        )
+
     def test_check_reports_actions_enabled_and_allowed_actions_drift(self):
         client = matching_client()
         live_actions = client.responses[("GET", "/repos/RussianLioN/codex-problems-resolver/actions/permissions")]
@@ -295,6 +371,34 @@ class RepositoryPolicyTests(unittest.TestCase):
 
         self.assertEqual(0, result.exit_code)
         self.assertNotIn(("GET", f"/repos/{repo}/rulesets"), [(m, p) for m, p, _ in client.calls])
+
+    def test_builtin_mode_classic_backend_reports_admin_only_notice(self):
+        repo = "RussianLioN/codex-problems-resolver"
+        policy = classic_policy_with_evidence()
+        client = FakeGhClient(
+            {
+                ("GET", f"/repos/{repo}"): matching_repo(),
+            }
+        )
+
+        result = repository_policy.check_policy(policy, repo, client, mode="builtin")
+
+        self.assertEqual(0, result.exit_code)
+        self.assertEqual(
+            [
+                "NOTICE: builtin mode did not check Actions settings",
+                "NOTICE: builtin mode cannot verify classic branch protection because it requires Repository Administration read permission",
+            ],
+            result.lines,
+        )
+        self.assertNotIn(("GET", f"/repos/{repo}/branches/main/protection"), [(m, p) for m, p, _ in client.calls])
+
+    def test_cli_check_accepts_builtin_mode(self):
+        parser = repository_policy.build_parser()
+
+        args = parser.parse_args(["check", "--repo", "RussianLioN/codex-problems-resolver", "--mode", "builtin"])
+
+        self.assertEqual("builtin", args.mode)
 
     def test_classic_backend_with_evidence_apply_updates_only_classic_protection(self):
         repo = "RussianLioN/codex-problems-resolver"

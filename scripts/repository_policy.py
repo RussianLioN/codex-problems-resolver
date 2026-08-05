@@ -248,15 +248,16 @@ def expected_classic_branch_protection(policy: dict[str, Any]) -> dict[str, Any]
     }
 
 
-def normalize_ruleset(ruleset: dict[str, Any]) -> dict[str, Any]:
+def normalize_ruleset(ruleset: dict[str, Any], include_bypass_actors: bool = True) -> dict[str, Any]:
     normalized = {
         "name": ruleset.get("name"),
-        "bypass_actors": _normalize_bypass_actors(ruleset.get("bypass_actors")),
         "target": ruleset.get("target"),
         "enforcement": ruleset.get("enforcement"),
         "conditions": ruleset.get("conditions", {}),
         "rules": [],
     }
+    if include_bypass_actors:
+        normalized["bypass_actors"] = _normalize_bypass_actors(ruleset.get("bypass_actors"))
     for rule in ruleset.get("rules", []):
         item = {"type": rule.get("type")}
         if "parameters" in rule:
@@ -343,36 +344,61 @@ def _enabled_value(value: Any) -> bool:
     return bool(value)
 
 
-def check_policy(policy: dict[str, Any], repo: str, client: Any) -> CommandResult:
+def check_policy(policy: dict[str, Any], repo: str, client: Any, mode: str = "full") -> CommandResult:
     validation_errors = validate_policy(policy)
     if validation_errors:
         return CommandResult(1, [f"POLICY {error}" for error in validation_errors])
+    if mode not in {"full", "builtin"}:
+        return CommandResult(1, [f"MODE must be full or builtin, got {mode}"])
     if repo != policy["repository"]:
         return CommandResult(1, [f"REPO argument must be {policy['repository']}"])
 
     try:
         live_repo = client.call("GET", f"/repos/{repo}")
-        live_actions = client.call("GET", f"/repos/{repo}/actions/permissions")
-        live_workflow = client.call("GET", f"/repos/{repo}/actions/permissions/workflow")
         lines = _diff(expected_repository_settings(policy), live_repo, "repository")
-        lines.extend(_diff(expected_actions_permissions(policy), live_actions, "actions"))
-        lines.extend(_diff(expected_workflow_permissions(policy), live_workflow, "actions.workflow"))
+        notices: list[str] = []
+        if mode == "full":
+            live_actions = _call_full_admin_read(client, repo, f"/repos/{repo}/actions/permissions")
+            live_workflow = _call_full_admin_read(client, repo, f"/repos/{repo}/actions/permissions/workflow")
+            lines.extend(_diff(expected_actions_permissions(policy), live_actions, "actions"))
+            lines.extend(_diff(expected_workflow_permissions(policy), live_workflow, "actions.workflow"))
+        else:
+            notices.append("NOTICE: builtin mode did not check Actions settings")
+
         backend = policy["main_protection"]["backend"]
         if backend == "classic":
-            classic_result = _check_classic_branch_protection(policy, repo, client)
-            if classic_result.exit_code == 2:
-                return classic_result
-            if classic_result.exit_code == 0:
-                lines.extend(classic_result.lines)
+            if mode == "builtin":
+                notices.append(
+                    "NOTICE: builtin mode cannot verify classic branch protection because it requires Repository Administration read permission"
+                )
             else:
-                lines.extend(classic_result.lines)
+                classic_result = _check_classic_branch_protection(policy, repo, client)
+                if classic_result.exit_code == 2:
+                    return classic_result
+                if classic_result.exit_code == 0:
+                    lines.extend(classic_result.lines)
+                else:
+                    lines.extend(classic_result.lines)
         else:
             ruleset = _get_named_ruleset(client, repo, RULESET_NAME)
             if ruleset is None:
                 lines.append(f"DRIFT ruleset.{RULESET_NAME}: expected present actual missing")
             else:
-                expected = normalize_ruleset(expected_ruleset_payload(policy))
-                actual = normalize_ruleset(_without_ids(ruleset))
+                bypass_visible = "bypass_actors" in ruleset
+                if mode == "full" and not bypass_visible:
+                    return CommandResult(
+                        2,
+                        [
+                            "ERROR: full mode cannot verify ruleset bypass_actors for main-protection; token lacks sufficient ruleset detail visibility",
+                        ],
+                    )
+                include_bypass = mode == "full" or bypass_visible
+                if mode == "builtin" and not bypass_visible:
+                    notices.append(
+                        "NOTICE: builtin mode did not verify ruleset bypass_actors because the field is not visible"
+                    )
+                expected = normalize_ruleset(expected_ruleset_payload(policy), include_bypass_actors=include_bypass)
+                actual = normalize_ruleset(_without_ids(ruleset), include_bypass_actors=include_bypass)
                 lines.extend(_diff(expected, actual, "ruleset.main-protection"))
     except GhApiError as exc:
         return CommandResult(2, [f"ERROR: {exc.message}"])
@@ -382,7 +408,22 @@ def check_policy(policy: dict[str, Any], repo: str, client: Any) -> CommandResul
         if drift:
             return CommandResult(1, drift)
         return CommandResult(0, lines)
+    if notices:
+        return CommandResult(0, notices)
     return CommandResult(0, ["OK: repository policy matches"])
+
+
+def _call_full_admin_read(client: Any, repo: str, path: str) -> Any:
+    try:
+        return client.call("GET", path)
+    except GhApiError as exc:
+        if exc.status == 403:
+            raise GhApiError(
+                f"full mode requires a token with Repository Administration read permission for {path}: {exc.message}",
+                exit_code=2,
+                status=403,
+            ) from exc
+        raise
 
 
 def _check_classic_branch_protection(policy: dict[str, Any], repo: str, client: Any) -> CommandResult:
@@ -512,7 +553,7 @@ def _print_result(result: CommandResult) -> int:
     return result.exit_code
 
 
-def main(argv: list[str] | None = None) -> int:
+def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Validate and reconcile GitHub repository policy.")
     subparsers = parser.add_subparsers(dest="command", required=True)
 
@@ -522,12 +563,18 @@ def main(argv: list[str] | None = None) -> int:
     check_parser = subparsers.add_parser("check")
     check_parser.add_argument("--repo", required=True)
     check_parser.add_argument("--policy", type=Path, default=DEFAULT_POLICY_PATH)
+    check_parser.add_argument("--mode", choices=("full", "builtin"), default="full")
 
     apply_parser = subparsers.add_parser("apply")
     apply_parser.add_argument("--repo", required=True)
     apply_parser.add_argument("--confirm", required=True)
     apply_parser.add_argument("--policy", type=Path, default=DEFAULT_POLICY_PATH)
 
+    return parser
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = build_parser()
     args = parser.parse_args(argv)
 
     try:
@@ -547,7 +594,7 @@ def main(argv: list[str] | None = None) -> int:
 
     client = GhClient()
     if args.command == "check":
-        return _print_result(check_policy(policy, args.repo, client))
+        return _print_result(check_policy(policy, args.repo, client, mode=args.mode))
     if args.command == "apply":
         return _print_result(apply_policy(policy, args.repo, args.confirm, client))
     return 2
