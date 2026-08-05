@@ -833,7 +833,7 @@ class RepositoryPolicyTests(unittest.TestCase):
                 ("GET", f"/repos/{repo}/actions/permissions/workflow"): matching_workflow_permissions(),
                 ("GET", f"/repos/{repo}/rulesets"): [unrelated, matching_ruleset()],
                 ("GET", f"/repos/{repo}/rulesets/101"): ruleset_detail,
-                ("PATCH", f"/repos/{repo}/rulesets/101"): update_ruleset,
+                ("PUT", f"/repos/{repo}/rulesets/101"): update_ruleset,
             }
         )
         policy = repository_policy.load_policy(POLICY_PATH)
@@ -841,7 +841,9 @@ class RepositoryPolicyTests(unittest.TestCase):
         result = repository_policy.apply_policy(policy, repo, repo, client)
 
         self.assertEqual(0, result.exit_code)
-        self.assertIn(("PATCH", f"/repos/{repo}/rulesets/101"), [(m, p) for m, p, _ in client.calls])
+        self.assertIn(("PUT", f"/repos/{repo}/rulesets/101"), [(m, p) for m, p, _ in client.calls])
+        self.assertNotIn(("PATCH", f"/repos/{repo}/rulesets/101"), [(m, p) for m, p, _ in client.calls])
+        self.assertNotIn(("PUT", f"/repos/{repo}/rulesets/202"), [(m, p) for m, p, _ in client.calls])
         self.assertNotIn(("PATCH", f"/repos/{repo}/rulesets/202"), [(m, p) for m, p, _ in client.calls])
         self.assertFalse([call for call in client.calls if call[0] == "DELETE"])
 
@@ -1096,10 +1098,10 @@ class RepositoryPolicyTests(unittest.TestCase):
         self.assertIn("bad URL", result.lines[0])
         self.assertNotIn(("PUT", f"/repos/{repo}/branches/main/protection"), [(m, p) for m, p, _ in client.calls])
 
-    def test_apply_does_not_fallback_when_ruleset_patch_reports_plan_feature_unavailable(self):
+    def test_apply_does_not_fallback_when_ruleset_update_reports_plan_feature_unavailable(self):
         repo = "RussianLioN/codex-problems-resolver"
 
-        def patch_ruleset(method, path, payload):
+        def update_ruleset(method, path, payload):
             raise repository_policy.GhApiError("rulesets feature is unavailable for this plan", exit_code=2, status=403)
 
         current_ruleset = matching_ruleset()
@@ -1111,7 +1113,7 @@ class RepositoryPolicyTests(unittest.TestCase):
                 ("GET", f"/repos/{repo}/actions/permissions/workflow"): matching_workflow_permissions(),
                 ("GET", f"/repos/{repo}/rulesets"): [matching_ruleset()],
                 ("GET", f"/repos/{repo}/rulesets/101"): current_ruleset,
-                ("PATCH", f"/repos/{repo}/rulesets/101"): patch_ruleset,
+                ("PUT", f"/repos/{repo}/rulesets/101"): update_ruleset,
             }
         )
         policy = repository_policy.load_policy(POLICY_PATH)

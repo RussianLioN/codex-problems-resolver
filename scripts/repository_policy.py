@@ -666,7 +666,7 @@ def _upsert_ruleset_or_fallback(policy: dict[str, Any], repo: str, client: Any) 
                 return True
             raise
     if _needs_update(normalize_ruleset(payload), normalize_ruleset(_without_ids(existing))):
-        client.call("PATCH", f"/repos/{repo}/rulesets/{existing_id}", payload)
+        client.call("PUT", f"/repos/{repo}/rulesets/{existing_id}", payload)
     return False
 
 
