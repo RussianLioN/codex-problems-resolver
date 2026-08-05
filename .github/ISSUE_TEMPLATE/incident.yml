@@ -1,0 +1,66 @@
+name: Инцидент Codex
+description: Зафиксировать воспроизводимый сбой, доказательства и риск
+title: "[incident]: "
+labels:
+  - bug
+body:
+  - type: textarea
+    id: symptom
+    attributes:
+      label: Симптом
+      description: Что пошло не так и как это проявилось.
+      placeholder: Опишите наблюдаемое поведение.
+    validations:
+      required: true
+  - type: textarea
+    id: environment
+    attributes:
+      label: Окружение
+      description: Версия Codex, операционная система, репозиторий, ветка и важные локальные условия.
+      placeholder: Укажите только данные, которые можно публиковать в частном репозитории.
+    validations:
+      required: true
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Воспроизведение
+      description: Минимальные шаги, команды или входные данные для повторения сбоя.
+      placeholder: |
+        1. ...
+        2. ...
+        3. ...
+    validations:
+      required: true
+  - type: textarea
+    id: evidence
+    attributes:
+      label: Доказательства
+      description: Обезличенные выдержки журналов, сообщения об ошибках, ссылки на файлы или снимки состояния.
+      placeholder: Не добавляйте токены, пароли, cookie, приватные ключи и персональные данные.
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Ожидаемое поведение
+      description: Как система должна была сработать.
+      placeholder: Опишите проверяемый ожидаемый результат.
+    validations:
+      required: true
+  - type: textarea
+    id: risk
+    attributes:
+      label: Риск
+      description: Влияние на данные, безопасность, доступность, воспроизводимость или работу пользователя.
+      placeholder: Опишите тяжесть и границы риска.
+    validations:
+      required: true
+  - type: dropdown
+    id: redaction
+    attributes:
+      label: Подтверждение редакции секретов
+      description: Подтвердите, что доказательства очищены от секретов и чувствительных данных.
+      options:
+        - Подтверждаю, секреты и чувствительные данные удалены или заменены маркерами.
+    validations:
+      required: true

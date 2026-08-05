@@ -1,33 +1,49 @@
 # Repository Guidelines
 
-## Project Structure & Module Organization
+## Назначение репозитория
 
-This repository is currently a minimal scaffold. The only project directory is `tests/smart_subagents/`, reserved for checks covering smart-subagent behavior. Keep production code in a clearly named top-level directory such as `src/`, and mirror its module boundaries under `tests/`. Place reusable fixtures in `tests/fixtures/`; do not mix generated output, local logs, or temporary runtime data with committed sources.
+Репозиторий хранит воспроизводимые разборы, исправления, тесты и меры предупреждения сбоев Codex. Git является источником истины для требований, доказательств и состояния. Каждое изменение должно оставлять проверяемый след: задача, ветка, проверки, запрос на слияние и итоговая сверка.
 
-When introducing the first implementation, add a short `README.md` that identifies the language, runtime version, entry point, and dependency installation procedure.
+## Структура проекта
 
-## Build, Test, and Development Commands
+- `AGENTS.md` — правила работы для людей и Codex.
+- `docs/GITOPS.md` описывает жизненный цикл инцидента; разборы размещаются как `docs/incidents/YYYY-MM-DD-<slug>.md`, повторяемые инструкции — в `docs/runbooks/`.
+- `scripts/` содержит команды на Python 3 без внешних зависимостей, `tests/` — их проверки.
+- `.github/` содержит рабочий процесс, форму инцидента и шаблон запроса на слияние.
+- `ops/github/repository-policy.json` задаёт ожидаемые настройки GitHub.
+- `SECURITY.md` определяет порядок сообщения об уязвимостях и редакции данных.
 
-No build system, dependency manifest, or test runner is configured yet. Do not assume that `npm`, `pytest`, or `make` is available. The change that introduces a toolchain must also document reproducible commands here and in `README.md`, preferably behind stable entry points such as:
+## Команды управления и проверки
 
 ```sh
-make test     # Run the complete test suite
-make lint     # Run formatting and static checks
-make build    # Produce distributable artifacts
+python3 scripts/validate_repository.py
+python3 scripts/repository_policy.py validate
+python3 scripts/repository_policy.py check --repo RussianLioN/codex-problems-resolver
+python3 -m unittest discover -s tests -p 'test_*.py'
 ```
 
-Until then, use `find . -maxdepth 3 -type f` to inspect the repository contents.
+В запросе на слияние указывайте фактически выполненные команды и результаты. Применение политики меняет GitHub и требует точного подтверждения:
 
-## Coding Style & Naming Conventions
+```sh
+python3 scripts/repository_policy.py apply --repo RussianLioN/codex-problems-resolver --confirm RussianLioN/codex-problems-resolver
+```
 
-Use the canonical formatter and linter for the selected language, committed with project configuration. Avoid unrelated formatting changes. Prefer small modules with one responsibility, descriptive names, and explicit interfaces. Name test files according to the chosen framework, for example `test_scheduler.py` or `scheduler.test.ts`, and keep directory names lowercase.
+## Стиль, именование и тесты
 
-## Testing Guidelines
+Пишите документацию по-русски; принятые термины Git, GitOps, Python, GitHub, Codex, Markdown и YAML допустимы. Python оформляйте четырьмя пробелами, функции и файлы называйте в `snake_case`, тесты — `test_<поведение>`.
 
-Add tests with every behavior change and regression fix. Tests should be deterministic, isolated from external services, and safe to run concurrently. Put smart-subagent tests under `tests/smart_subagents/`. Document any required fixtures and ensure temporary resources are removed after each test. No coverage threshold exists yet; add one only with an automated coverage command and continuous-integration check.
+Изменение поведения сопровождайте детерминированным тестом без внешней сети. Ветки исправлений называйте `fix/<issue>-<slug>`. Темы коммитов следуют Conventional Commits:
 
-## Commit & Pull Request Guidelines
+```text
+fix: preserve incident evidence
+```
 
-Git history is not available in this directory, so no repository-specific convention can be inferred. Use concise Conventional Commit subjects such as `feat: add agent recovery probe` or `docs: add contributor guide`. Keep each commit focused.
+Запрос на слияние должен объяснять проблему, изменение, проверки, риски, откат и связанную задачу. Используйте squash merge; один коммит решает одну понятную задачу.
 
-Pull requests should explain the problem, summarize the solution, list verification commands and results, and link the relevant issue. Include screenshots only for user-visible interface changes. Never commit credentials, tokens, `.env` files, or machine-specific paths; provide sanitized examples instead.
+## Безопасность и редактура данных
+
+Не добавляйте токены, ключи, пароли, cookie, заголовки авторизации, персональные данные и необезличенные журналы. Заменяйте чувствительные значения маркерами `<REDACTED_TOKEN>`, `<USER_HOME>` или `<PRIVATE_HOST>`. При подозрении на утечку сначала отзовите или ротируйте секрет, затем фиксируйте инцидент.
+
+## Жизненный цикл GitOps-инцидента
+
+Создайте задачу с симптомом и обезличенными доказательствами, ветку от актуальной `main`, минимальное исправление и проверки. После рецензии выполните squash merge, сверку основной ветки и только затем закройте задачу. Откат проводите отдельным запросом на слияние, предпочтительно через revert. Аварийное действие обязательно документируйте и возвращайте под управление Git.
