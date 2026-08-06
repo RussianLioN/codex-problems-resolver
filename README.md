@@ -12,6 +12,8 @@
 
 - `AGENTS.md` — рабочие правила репозитория для людей и Codex.
 - `docs/GITOPS.md` — жизненный цикл инцидента, правила веток, проверок, отката и аварийных исключений.
+- `docs/incidents/2026-08-06-smart-stop-hook-timeout.md` — разбор превышения внешнего срока Stop-хука.
+- `docs/runbooks/smart-stop-hook-recovery.md` — безопасная диагностика, установка и откат исправления Stop.
 - `SECURITY.md` — сообщение о уязвимостях, редактура журналов и запрет на секреты.
 - `.github/ISSUE_TEMPLATE/incident.yml` — форма регистрации инцидента.
 - `.github/pull_request_template.md` — обязательные поля запроса на слияние.
