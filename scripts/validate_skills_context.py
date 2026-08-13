@@ -18,7 +18,9 @@ class ValidationResult:
     errors: list[str]
 
 
-def validate_prompt(payload: object) -> ValidationResult:
+def validate_prompt(
+    payload: object, allowed_roots: list[Path] | None = None
+) -> ValidationResult:
     """Сверить видимые описания навыков с их локальными метаданными."""
     try:
         text = _extract_text(payload)
@@ -26,11 +28,16 @@ def validate_prompt(payload: object) -> ValidationResult:
     except ValueError as exc:
         return ValidationResult([], [str(exc)])
 
+    trusted_roots = (
+        [path.resolve() for path in allowed_roots]
+        if allowed_roots is not None
+        else [(Path.home() / ".codex").resolve()]
+    )
     shortened: list[tuple[str, int]] = []
     errors: list[str] = []
     for name, visible_description, source in skills:
         try:
-            path = _resolve_skill_path(source, roots)
+            path = _resolve_skill_path(source, roots, trusted_roots)
             full_description = _read_description(path)
         except ValueError as exc:
             errors.append(f"{name}: {exc}")
@@ -95,7 +102,7 @@ def _parse_catalog(text: str) -> tuple[dict[str, Path], list[tuple[str, str, str
     return roots, skills
 
 
-def _resolve_skill_path(source: str, roots: dict[str, Path]) -> Path:
+def _resolve_skill_path(source: str, roots: dict[str, Path], trusted_roots: list[Path]) -> Path:
     source_path = PurePosixPath(source)
     if source_path.is_absolute() or len(source_path.parts) < 3:
         raise ValueError("некорректный путь навыка")
@@ -106,12 +113,20 @@ def _resolve_skill_path(source: str, roots: dict[str, Path]) -> Path:
         raise ValueError("путь навыка выходит за объявленный корень")
 
     root = roots[alias].resolve()
+    if not any(_is_within(root, trusted_root) for trusted_root in trusted_roots):
+        raise ValueError("корень навыков находится вне разрешённых каталогов")
     candidate = (root.joinpath(*relative_parts)).resolve()
-    try:
-        candidate.relative_to(root)
-    except ValueError as exc:
-        raise ValueError("путь навыка выходит за объявленный корень") from exc
+    if not _is_within(candidate, root):
+        raise ValueError("путь навыка выходит за объявленный корень")
     return candidate
+
+
+def _is_within(path: Path, root: Path) -> bool:
+    try:
+        path.relative_to(root)
+    except ValueError:
+        return False
+    return True
 
 
 def _read_description(path: Path) -> str:

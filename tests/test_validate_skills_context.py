@@ -27,7 +27,7 @@ class ValidateSkillsContextTests(unittest.TestCase):
             self._write_skill(root, "shortened", "A complete description")
 
             result = validate_skills_context.validate_prompt(
-                prompt_payload(root, "A complete description")
+                prompt_payload(root, "A complete description"), allowed_roots=[root]
             )
 
         self.assertEqual([], result.shortened)
@@ -39,7 +39,9 @@ class ValidateSkillsContextTests(unittest.TestCase):
             self._write_skill(root, "example", "Example description")
             self._write_skill(root, "shortened", "A complete description")
 
-            result = validate_skills_context.validate_prompt(prompt_payload(root, "A complete"))
+            result = validate_skills_context.validate_prompt(
+                prompt_payload(root, "A complete"), allowed_roots=[root]
+            )
 
         self.assertEqual([("shortened", 12)], result.shortened)
         self.assertEqual([], result.errors)
@@ -54,7 +56,7 @@ class ValidateSkillsContextTests(unittest.TestCase):
                 "Example description", "Описание: с двоеточием"
             )
 
-            result = validate_skills_context.validate_prompt(payload)
+            result = validate_skills_context.validate_prompt(payload, allowed_roots=[root])
 
         self.assertEqual([], result.shortened)
         self.assertEqual([], result.errors)
@@ -68,10 +70,27 @@ class ValidateSkillsContextTests(unittest.TestCase):
                 "r0/shortened/SKILL.md", "r0/../outside/SKILL.md"
             )
 
-            result = validate_skills_context.validate_prompt(payload)
+            result = validate_skills_context.validate_prompt(payload, allowed_roots=[root])
 
         self.assertEqual([], result.shortened)
         self.assertIn("shortened: путь навыка выходит за объявленный корень", result.errors)
+
+    def test_root_outside_allowed_codex_directory_is_rejected(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            root = base / "outside"
+            allowed_root = base / "allowed"
+            self._write_skill(root, "example", "Example description")
+            self._write_skill(root, "shortened", "A complete description")
+
+            result = validate_skills_context.validate_prompt(
+                prompt_payload(root, "A complete description"), allowed_roots=[allowed_root]
+            )
+
+        self.assertEqual([], result.shortened)
+        self.assertIn(
+            "example: корень навыков находится вне разрешённых каталогов", result.errors
+        )
 
     def test_invalid_json_returns_usage_error(self):
         exit_code, output = validate_skills_context.run("{")
