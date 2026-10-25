@@ -14,6 +14,8 @@
 - `docs/GITOPS.md` — жизненный цикл инцидента, правила веток, проверок, отката и аварийных исключений.
 - `docs/incidents/2026-08-13-skills-context-budget.md` — разбор усечения описаний навыков Codex.
 - `docs/runbooks/skills-context-budget.md` — диагностика, исправление и откат бюджета описаний навыков.
+- `docs/incidents/2026-10-25-plan-question-agent-picker.md` — потеря Shift в iTerm2 при открытии вопросов Codex.
+- `docs/runbooks/plan-question-agent-picker.md` — восстановление Shift + стрелок, проверка и откат.
 - `SECURITY.md` — сообщение о уязвимостях, редактура журналов и запрет на секреты.
 - `.github/ISSUE_TEMPLATE/incident.yml` — форма регистрации инцидента.
 - `.github/pull_request_template.md` — обязательные поля запроса на слияние.
