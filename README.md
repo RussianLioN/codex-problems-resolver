@@ -17,6 +17,7 @@
 - `docs/incidents/2026-10-25-plan-question-agent-picker.md` — потеря Shift в iTerm2 при открытии вопросов Codex.
 - `docs/runbooks/plan-question-agent-picker.md` — восстановление Shift + стрелок, проверка и откат.
 - [Ложный активный шаг Codex](docs/incidents/2026-10-27-codex-stale-active-turn.md) — рассогласование клиента и сервера, адресное восстановление и проверка `/plan`.
+- [HTTP 403 при запуске promo MCP](docs/incidents/2026-10-31-openai-credit-promo-mcp-403.md) — проверка Cloudflare, штатного подключения и безопасного просмотра бонуса.
 - `SECURITY.md` — сообщение о уязвимостях, редактура журналов и запрет на секреты.
 - `.github/ISSUE_TEMPLATE/incident.yml` — форма регистрации инцидента.
 - `.github/pull_request_template.md` — обязательные поля запроса на слияние.
